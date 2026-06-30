@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+build/
+process_video.exe
+.env
+*.db
+.DS_Store
+Thumbs.db
