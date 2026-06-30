@@ -12,7 +12,7 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_PATH)) return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
   } catch {}
-  return { backendUrl: process.env.BACKEND_URL || "http://localhost:8004" };
+  return { backendUrl: process.env.BACKEND_URL || (isDev ? "http://localhost:8004" : "http://167.86.81.188:8004") };
 }
 
 function saveConfig(cfg) {
