@@ -3,7 +3,7 @@ import useStore from "../../store/useStore";
 import { stkPush, pollPayment, getMe } from "../../services/api";
 
 const PACKAGES = [
-  { kes: 100, credits: 10 },
+  { kes: 1, credits: 10 },
   { kes: 200, credits: 20 },
   { kes: 500, credits: 50 },
   { kes: 1000, credits: 100 },
@@ -13,6 +13,7 @@ export default function Dashboard() {
   const { user, setUser, setCredits } = useStore();
   const [mpesaPhone, setMpesaPhone] = useState("");
   const [selectedKes, setSelectedKes] = useState(100);
+  const [customKes, setCustomKes] = useState("");
   const [topupState, setTopupState] = useState("idle"); // idle | sending | waiting | success | failed
   const [checkoutId, setCheckoutId] = useState("");
   const [pollTimer, setPollTimer] = useState(null);
@@ -25,12 +26,15 @@ export default function Dashboard() {
     } catch {}
   }
 
+  const effectiveKes = customKes && parseInt(customKes) >= 10 ? parseInt(customKes) : selectedKes;
+
   async function handleTopUp() {
     if (!mpesaPhone.trim()) { setError("Enter your Mpesa phone number"); return; }
+    if (!effectiveKes || effectiveKes < 10) { setError("Enter a valid amount (min KES 10)"); return; }
     setError("");
     setTopupState("sending");
     try {
-      const result = await stkPush(mpesaPhone, selectedKes);
+      const result = await stkPush(mpesaPhone, effectiveKes);
       setCheckoutId(result.checkout_id);
       setTopupState("waiting");
       startPolling(result.checkout_id);
@@ -82,9 +86,9 @@ export default function Dashboard() {
       {/* Tier overview */}
       <div className="grid grid-cols-3 gap-3 mb-6">
         {[
-          { label: "Basic", credits: 3, desc: "~10 fps" },
-          { label: "Standard", credits: 5, desc: "~5 fps" },
-          { label: "Premium", credits: 8, desc: "~2 fps" },
+          { label: "Basic", credits: 1, desc: "~10 fps" },
+          { label: "Standard", credits: 2, desc: "~5 fps" },
+          { label: "Premium", credits: 3, desc: "~2 fps" },
         ].map((t) => (
           <div key={t.label} className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-center">
             <div className="text-xs font-medium text-gray-500 dark:text-gray-400">{t.label}</div>
@@ -98,13 +102,13 @@ export default function Dashboard() {
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-5">
         <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Top Up via Mpesa</h3>
 
-        <div className="grid grid-cols-4 gap-2 mb-4">
+        <div className="grid grid-cols-4 gap-2 mb-3">
           {PACKAGES.map((pkg) => (
             <button
               key={pkg.kes}
-              onClick={() => setSelectedKes(pkg.kes)}
+              onClick={() => { setSelectedKes(pkg.kes); setCustomKes(""); }}
               className={`rounded-xl p-2.5 border-2 text-center transition ${
-                selectedKes === pkg.kes
+                selectedKes === pkg.kes && !customKes
                   ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950"
                   : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
               }`}
@@ -113,6 +117,27 @@ export default function Dashboard() {
               <div className="text-xs text-indigo-600 dark:text-indigo-400">{pkg.credits} credits</div>
             </button>
           ))}
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Or enter a custom amount</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400 font-medium">KES</span>
+            <input
+              type="number"
+              min="10"
+              value={customKes}
+              onChange={(e) => { setCustomKes(e.target.value); if (e.target.value) setSelectedKes(null); }}
+              placeholder="e.g. 350"
+              disabled={topupState !== "idle"}
+              className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl pl-12 pr-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 transition disabled:opacity-50"
+            />
+            {customKes && parseInt(customKes) >= 10 && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-indigo-500 font-medium">
+                {Math.floor(parseInt(customKes) / 10)} credits
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="mb-4">
@@ -138,7 +163,7 @@ export default function Dashboard() {
             onClick={handleTopUp}
             className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl text-sm transition"
           >
-            Send KES {selectedKes} Prompt
+            Send KES {effectiveKes} Prompt
           </button>
         )}
 
@@ -163,7 +188,7 @@ export default function Dashboard() {
           <div className="bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4 text-center">
             <div className="text-sm font-medium text-indigo-900 dark:text-indigo-100 mb-1">Payment successful!</div>
             <div className="text-xs text-indigo-600 dark:text-indigo-400">
-              {PACKAGES.find((p) => p.kes === selectedKes)?.credits} credits added to your account.
+              {Math.floor(effectiveKes / 10)} credits added to your account.
             </div>
             <button
               onClick={() => { setTopupState("idle"); setError(""); }}

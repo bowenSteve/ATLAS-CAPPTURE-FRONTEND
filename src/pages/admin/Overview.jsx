@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { adminOverview, adminOpenRouterBalance } from "../../services/api";
 
 function KPI({ label, value, sub, highlight }) {
@@ -34,23 +34,43 @@ export default function Overview() {
   const [data, setData] = useState(null);
   const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
+  function fetchData(isRefresh = false) {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     Promise.all([
       adminOverview().catch(() => null),
       adminOpenRouterBalance().catch(() => null),
     ]).then(([overview, bal]) => {
       setData(overview);
       setBalance(bal);
-    }).finally(() => setLoading(false));
-  }, []);
+    }).finally(() => {
+      setLoading(false);
+      setRefreshing(false);
+    });
+  }
+
+  useEffect(() => { fetchData(); }, []);
 
   if (loading) return <div className="p-6 text-gray-400 text-sm">Loading…</div>;
   if (!data) return <div className="p-6 text-red-400 text-sm">Failed to load overview.</div>;
 
   return (
     <div className="p-6">
-      <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-6">Overview</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white">Overview</h2>
+        <button
+          onClick={() => fetchData(true)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition disabled:opacity-50"
+        >
+          <svg className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
 
       {/* OpenRouter Balance Banner */}
       {balance && (

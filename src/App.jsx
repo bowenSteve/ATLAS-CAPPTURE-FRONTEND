@@ -64,7 +64,9 @@ export default function App() {
       {/* Title bar */}
       <div className="h-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex items-center px-4 select-none shrink-0 drag">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-indigo-500" />
+          <div className="w-6 h-6 rounded-lg bg-indigo-600 flex items-center justify-center">
+            <span className="text-white text-xs font-bold tracking-tight leading-none">ACT</span>
+          </div>
           <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Atlas Capture Tool</span>
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-gray-400">
@@ -120,15 +122,15 @@ export default function App() {
           </div>
         </aside>
 
-        {/* Main content */}
+        {/* Main content — all user tabs stay mounted to preserve annotation state */}
         <main className="flex-1 overflow-y-auto">
-          {!adminMode && activeTab === "annotate" && <Annotate />}
-          {!adminMode && activeTab === "dashboard" && <Dashboard />}
-          {!adminMode && activeTab === "history" && <History />}
-          {!adminMode && activeTab === "settings" && <Settings />}
-          {adminMode && activeTab === "admin-overview" && <Overview />}
-          {adminMode && activeTab === "admin-users" && <Users />}
-          {adminMode && activeTab === "admin-settings" && <AdminSettings />}
+          <div className={!adminMode && activeTab === "annotate" ? "" : "hidden"}><Annotate /></div>
+          <div className={!adminMode && activeTab === "dashboard" ? "" : "hidden"}><Dashboard /></div>
+          <div className={!adminMode && activeTab === "history" ? "" : "hidden"}><History /></div>
+          <div className={!adminMode && activeTab === "settings" ? "" : "hidden"}><Settings /></div>
+          <div className={adminMode && activeTab === "admin-overview" ? "" : "hidden"}><Overview /></div>
+          <div className={adminMode && activeTab === "admin-users" ? "" : "hidden"}><Users /></div>
+          <div className={adminMode && activeTab === "admin-settings" ? "" : "hidden"}><AdminSettings /></div>
         </main>
       </div>
     </div>

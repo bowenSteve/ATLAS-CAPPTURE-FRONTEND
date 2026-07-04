@@ -6,23 +6,23 @@ const TIERS = [
   {
     id: "basic",
     label: "Basic",
-    credits: 3,
-    fps: 0.1,
-    desc: "1 frame / 10 s — fast, uses fewer tokens",
+    credits: 1,
+    fps: 2.0,
+    desc: "Good accuracy",
   },
   {
     id: "standard",
     label: "Standard",
-    credits: 5,
-    fps: 0.2,
-    desc: "1 frame / 5 s — balanced accuracy",
+    credits: 2,
+    fps: 4.0,
+    desc: "High accuracy",
   },
   {
     id: "premium",
     label: "Premium",
-    credits: 8,
-    fps: 0.5,
-    desc: "1 frame / 2 s — highest accuracy",
+    credits: 3,
+    fps: 8.0,
+    desc: "Highest accuracy",
   },
 ];
 
@@ -32,14 +32,34 @@ export default function Annotate() {
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+  const [screenshots, setScreenshots] = useState([]);
   const annotationIdRef = useRef(null);
   const errorHandledRef = useRef(false);
+
+  function copySegment(seg) {
+    navigator.clipboard.writeText(seg.label).then(() => {
+      setCopiedId(seg.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
+  }
 
   async function pickVideo() {
     const p = await window.electron.selectFile([
       { name: "Videos", extensions: ["mp4", "avi", "mov", "mkv", "webm", "MP4"] },
     ]);
     if (p) setVideoPath(p);
+  }
+
+  async function pickScreenshots() {
+    const paths = await window.electron.selectFiles([
+      { name: "Images", extensions: ["jpg", "jpeg", "png", "webp", "bmp"] },
+    ]);
+    if (paths.length > 0) setScreenshots((prev) => [...new Set([...prev, ...paths])]);
+  }
+
+  function removeScreenshot(path) {
+    setScreenshots((prev) => prev.filter((p) => p !== path));
   }
 
   async function handleAnnotate() {
@@ -88,6 +108,7 @@ export default function Annotate() {
         model: sessionData.openrouter_model,
         apiUrl: sessionData.openrouter_base_url,
         annotationId: sessionData.annotation_id,
+        screenshotPaths: screenshots,
       });
 
       await completeAnnotation(sessionData.annotation_id, done.segments, done.tokens_used, done.cost_usd || 0);
@@ -125,6 +146,7 @@ export default function Annotate() {
     setResult(null);
     setErrorMsg("");
     setProgress({ current: 0, total: 0 });
+    setScreenshots([]);
   }
 
   const selectedTier = TIERS.find((t) => t.id === tier);
@@ -134,7 +156,7 @@ export default function Annotate() {
     <div className="max-w-2xl mx-auto p-6">
       <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-1">Annotate Video</h2>
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-        Select a video and tier, then let the AI generate egocentric action labels.
+        Select a video and tier to generate egocentric action labels.
       </p>
 
       {phase === "idle" && (
@@ -142,19 +164,83 @@ export default function Annotate() {
           {/* Video picker */}
           <div className="mb-5">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Video File</label>
-            <button
-              onClick={pickVideo}
-              className="w-full bg-gray-50 dark:bg-gray-800 border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-indigo-500 dark:hover:border-indigo-500 rounded-2xl px-5 py-6 flex flex-col items-center gap-2 transition group"
-            >
-              <svg className="w-8 h-8 text-gray-400 group-hover:text-indigo-500 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
-              </svg>
-              <span className={videoName ? "text-sm font-medium text-gray-900 dark:text-white" : "text-sm text-gray-400"}>
-                {videoName || "Click to select a video file"}
-              </span>
-              {videoName && <span className="text-xs text-gray-400">Click to change</span>}
-            </button>
+            {videoName ? (
+              <div className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3 flex items-center gap-3">
+                <svg className="w-5 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
+                </svg>
+                <span className="text-sm font-medium text-gray-900 dark:text-white flex-1 truncate">{videoName}</span>
+                <button
+                  onClick={() => setVideoPath(null)}
+                  className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-red-100 dark:hover:bg-red-900 flex items-center justify-center transition shrink-0"
+                  title="Remove video"
+                >
+                  <svg className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400 hover:text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={pickVideo}
+                className="w-full bg-gray-50 dark:bg-gray-800 border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-indigo-500 dark:hover:border-indigo-500 rounded-2xl px-5 py-6 flex flex-col items-center gap-2 transition group"
+              >
+                <svg className="w-8 h-8 text-gray-400 group-hover:text-indigo-500 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
+                </svg>
+                <span className="text-sm text-gray-400">Click to select a video file</span>
+              </button>
+            )}
+          </div>
+
+          {/* Screenshot reference images */}
+          <div className="mb-5">
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Reference Screenshots
+                <span className="ml-1.5 text-xs font-normal text-gray-400">(optional)</span>
+              </label>
+              <button
+                onClick={pickScreenshots}
+                className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Add images
+              </button>
+            </div>
+
+            {screenshots.length === 0 ? (
+              <button
+                onClick={pickScreenshots}
+                className="w-full bg-gray-50 dark:bg-gray-800 border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-indigo-400 dark:hover:border-indigo-500 rounded-xl px-4 py-4 flex items-center gap-3 transition group"
+              >
+                <svg className="w-5 h-5 text-gray-400 group-hover:text-indigo-500 transition shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm text-gray-400">Attach screenshots that mark segment boundaries</span>
+              </button>
+            ) : (
+              <div className="space-y-1.5">
+                {screenshots.map((p) => (
+                  <div key={p} className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-indigo-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <span className="text-xs text-gray-700 dark:text-gray-300 flex-1 truncate">{p.split(/[\\/]/).pop()}</span>
+                    <button onClick={() => removeScreenshot(p)} className="w-5 h-5 rounded-full hover:bg-red-100 dark:hover:bg-red-900 flex items-center justify-center transition shrink-0">
+                      <svg className="w-3 h-3 text-gray-400 hover:text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+                <button onClick={pickScreenshots} className="text-xs text-indigo-500 hover:underline mt-1">+ Add more</button>
+              </div>
+            )}
           </div>
 
           {/* Tier selector */}
@@ -226,12 +312,12 @@ export default function Annotate() {
               </svg>
             </div>
             <h3 className="font-semibold text-gray-900 dark:text-white">
-              {phase === "extracting" ? "Extracting Frames" : "AI Annotating"}
+              {phase === "extracting" ? "Extracting Frames" : "Processing"}
             </h3>
             <p className="text-sm text-gray-400 mt-1">
               {phase === "extracting"
                 ? `Frame ${progress.current} of ${progress.total}`
-                : "Sending frames to the LLM…"}
+                : "This may take a moment..."}
             </p>
           </div>
           {progress.total > 0 && (
@@ -278,7 +364,7 @@ export default function Annotate() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <div>
+              <div className="flex-1">
                 <div className="font-semibold text-indigo-900 dark:text-indigo-100 text-sm">Annotation Complete</div>
                 <div className="text-xs text-indigo-600 dark:text-indigo-400">
                   {result.segment_count || result.segments?.length} segments · {result.duration}s video
@@ -289,10 +375,25 @@ export default function Annotate() {
 
           <div className="space-y-2 max-h-96 overflow-y-auto pr-1 mb-5">
             {result.segments?.map((seg) => (
-              <div key={seg.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl px-4 py-3 flex gap-3">
+              <div key={seg.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl px-4 py-3 flex gap-3 group">
                 <div className="text-xs text-gray-400 font-mono mt-0.5 shrink-0 w-16">{seg.start}</div>
                 <div className="text-xs text-gray-400 font-mono mt-0.5 shrink-0">→ {seg.end}</div>
                 <div className="text-sm text-gray-900 dark:text-white flex-1">{seg.label}</div>
+                <button
+                  onClick={() => copySegment(seg)}
+                  className="opacity-0 group-hover:opacity-100 transition shrink-0 w-6 h-6 flex items-center justify-center rounded-md hover:bg-gray-200 dark:hover:bg-gray-700"
+                  title="Copy label"
+                >
+                  {copiedId === seg.id ? (
+                    <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                </button>
               </div>
             ))}
           </div>

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { login, register, setAuthToken } from "../services/api";
 import useStore from "../store/useStore";
 
@@ -8,8 +8,14 @@ export default function Auth() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("rememberedEmail");
+    if (saved) { setEmail(saved); setRememberMe(true); }
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -23,6 +29,8 @@ export default function Auth() {
         if (!name.trim()) { setError("Name is required"); setLoading(false); return; }
         result = await register(email, name.trim(), password);
       }
+      if (rememberMe) localStorage.setItem("rememberedEmail", email);
+      else localStorage.removeItem("rememberedEmail");
       setAuthToken(result.token);
       setToken(result.token);
       setUser(result.user);
@@ -37,11 +45,8 @@ export default function Auth() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto mb-4">
-            <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
-            </svg>
+          <div className="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto mb-4">
+            <span className="text-white text-xl font-bold tracking-tight">ACT</span>
           </div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Atlas Capture Tool</h1>
           <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Egocentric video annotation</p>
@@ -77,6 +82,18 @@ export default function Auth() {
             )}
             <Input label="Email" type="email" value={email} onChange={setEmail} placeholder="you@example.com" />
             <Input label="Password" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
+
+            {mode === "login" && (
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <span className="text-sm text-gray-500 dark:text-gray-400">Remember me</span>
+              </label>
+            )}
 
             {error && (
               <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-xl px-4 py-3 text-sm">

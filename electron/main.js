@@ -52,6 +52,11 @@ ipcMain.handle("select-file", async (_, filters = []) => {
   return filePaths[0] || null;
 });
 
+ipcMain.handle("select-files", async (_, filters = []) => {
+  const { filePaths } = await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"], filters });
+  return filePaths || [];
+});
+
 ipcMain.handle("open-output", (_, filePath) => shell.openPath(filePath));
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -60,7 +65,7 @@ ipcMain.handle("save-config", (_, cfg) => { saveConfig(cfg); return true; });
 
 // ── Run process_video.py ─────────────────────────────────────────────────────
 ipcMain.handle("run-annotation", async (event, args) => {
-  const { videoPath, tier, framesPerSec, context, apiKey, model, apiUrl, annotationId } = args;
+  const { videoPath, tier, framesPerSec, context, apiKey, model, apiUrl, annotationId, screenshotPaths = [] } = args;
 
   const isWin = process.platform === "win32";
 
@@ -74,6 +79,7 @@ ipcMain.handle("run-annotation", async (event, args) => {
     "--annotation-id", String(annotationId),
   ];
   if (context) scriptArgs.push("--context", context);
+  if (screenshotPaths.length > 0) scriptArgs.push("--screenshots", ...screenshotPaths);
 
   let proc;
   if (isDev) {

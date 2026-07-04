@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electron", {
   selectFile: (filters) => ipcRenderer.invoke("select-file", filters),
+  selectFiles: (filters) => ipcRenderer.invoke("select-files", filters),
   openOutput: (path) => ipcRenderer.invoke("open-output", path),
   getConfig: () => ipcRenderer.invoke("get-config"),
   saveConfig: (cfg) => ipcRenderer.invoke("save-config", cfg),

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { adminGetSettings, adminUpdateSettings } from "../../services/api";
 
 export default function AdminSettings() {
@@ -48,7 +48,7 @@ export default function AdminSettings() {
 
       {/* OpenRouter */}
       <section className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-5 mb-4">
-        <h3 className="font-semibold text-gray-900 dark:text-white mb-4">OpenRouter / LLM</h3>
+        <h3 className="font-semibold text-gray-900 dark:text-white mb-4">OpenRouter</h3>
         <div className="space-y-4">
           <Field label="API Key">
             <input

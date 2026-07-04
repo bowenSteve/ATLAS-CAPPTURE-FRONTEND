@@ -17,52 +17,110 @@ import cv2
 import requests
 
 ANNOTATION_SYSTEM_PROMPT = """
-You are an expert at labeling egocentric video footage captured by a first-person camera worn by an annotator.
+You are an expert labeler for egocentric (first-person) video footage captured by a wearable camera.
 
 You will receive a sequence of video frames. Each frame has a timestamp burned into the bottom-left corner (HH:MM:SS format).
 
-Your task: identify ALL distinct actions in the video and assign them time boundaries and labels.
+Your task: identify all distinct hand-object interaction segments and label them precisely using Atlas Capture labeling guidelines.
 
-MANDATORY LABELING RULES:
-1. HAND SPECIFICATION REQUIRED — every label must include:
-   "with left hand", "with right hand", or "with both hands"
-   Example: "open refrigerator door with right hand"
+━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT TO LABEL
+━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Goal-oriented hand-object actions relevant to the task
+✓ Both left and right hand usage during hand-object interactions
+✓ Object transfers between hands (e.g. "pass tray in right hand to left hand")
 
-2. USE SPECIFIC VERBS — forbidden vague verbs: adjust, manipulate, move, transfer, handle
-   Instead use: open, close, pick up, put down, pour, cut, stir, press, pull, push, rotate, lift, place, wipe, fold, spread, squeeze, grip, release
+✗ Do NOT label: walking/navigation, looking/inspecting/checking, idle gestures, camera or face touches, irrelevant side actions
 
-3. NAME THE OBJECT EXPLICITLY — never use pronouns ("it", "them", "the item")
-   Say: "pick up glass bottle" not "pick it up"
+━━━━━━━━━━━━━━━━━━━━━━━━
+LABEL FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━
+1. IMPERATIVE VOICE — write as a command, not a description
+   ✓ pick up spoon with right hand
+   ✗ the spoon is picked with right hand
 
-4. NO ACTION RULE — only label a segment "No Action with right hand" if the person is:
-   - Genuinely stationary for more than 5 consecutive seconds, AND
-   - No meaningful sub-actions are visible
+2. HAND SPECIFICATION required in every label: "with left hand", "with right hand", or "with both hands"
 
-5. DENSE LABELING PREFERRED — when in doubt, split into more segments rather than merging.
-   If two different objects are acted on in sequence, those are separate segments.
+3. 1-3 ATOMIC ACTIONS per segment, separated by comma or "and"
+   ✓ pick up cup with left hand, place cup on table with left hand
+   ✓ hold sponge with left hand and pick up plate with right hand
+   ✗ pick up cup place cup on table with left hand  (missing separator)
+   ✗ pick up cup with left hand, place cup on table, and wipe surface with left hand  (too many — 3 atomic actions is the max)
 
-6. SEGMENT BOUNDARIES — place boundaries at clear visual transition points between actions.
-   Cover the ENTIRE video from first frame to last frame, NO GAPS between segments.
+4. Under 20 words; all words must be true for the entire duration of the segment
 
-7. FORBIDDEN WORDS: "adjust", "manipulate", "move", "transfer", "pick" (use "pick up"), "take",
-   "grasp" (unless specifically grasping), "give" (use "hand over"), "put" alone (use "put down" or "place"),
-   pronouns (it, them, they, the item, the object)
+5. DO NOT label intent — label what ego IS doing, not what they intend to do
+   ✓ cut tape with scissors with right hand
+   ✗ pick up scissors to cut tape with right hand
 
-OUTPUT FORMAT — return valid JSON only, no extra text:
+━━━━━━━━━━━━━━━━━━━━━━━━
+SEGMENTATION RULES
+━━━━━━━━━━━━━━━━━━━━━━━━
+- Segment STARTS: when hands begin engaging toward an object
+- Segment ENDS: when hands disengage or the goal changes
+- Do NOT bleed actions into neighboring segments
+- Max segment duration: 10 seconds — this is a HARD LIMIT. Never create a segment longer than 10 seconds.
+  If the same action continues for longer than 10 seconds, split it into consecutive segments with the same label.
+  Example: a 25-second tightening action → three segments: 0-10s, 10-20s, 20-25s, all labeled "tighten bolt with screwdriver with both hands"
+- Cover the entire video with NO gaps from first frame to last frame
+
+NO ACTION: label "no action" only when hands touch nothing for more than 5 consecutive seconds, or ego is idle/irrelevant for more than 5s. Do not split a segment just because the ego pauses. Idle periods of 5s or less are absorbed into the adjacent segment.
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+VERB RULES
+━━━━━━━━━━━━━━━━━━━━━━━━
+Object leaves a surface → "pick up"  (never: pick, take, grasp)
+Object contacts a surface → "place [general location]"  (e.g. "place cup on table", not "place cup on upper-left of table")
+Object moved between locations → "reposition"
+Instead of "adjust" → use "shift" or "reposition"
+Instead of "move" / "transfer" → use "pick up" and "place"
+Do NOT invent steps that are not visible in the frames.
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECT NAMING
+━━━━━━━━━━━━━━━━━━━━━━━━
+- NEVER use "tool", "object", "thing", "item" — always name the actual object
+- If you cannot identify the exact tool name, describe it by visual properties: color + shape + function
+  e.g. "silver hex wrench", "red-handled screwdriver", "black allen key", "yellow spray can"
+- Use the context field to infer domain-specific names (e.g. "pivot bolt", "derailleur cable", "suspension linkage")
+- Use color/shape to disambiguate similar objects when context doesn't specify
+- Multiple identical objects acted on at once: use collective plural ("pick up knives", not "pick up 3 knives")
+- Multiple different objects held simultaneously: list them ("hold pliers and hammer with right hand")
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+FORBIDDEN WORDS — never use these
+━━━━━━━━━━━━━━━━━━━━━━━━
+adjust, manipulate, move, transfer, inspect, check, examine, reach
+pick (alone), take, grasp
+it, them, they  (pronouns — always use the object name)
+-ing form of any verb  (use base form: "pick up" not "picking up", "place" not "placing", "fold" not "folding")
+the, a, an  (articles — omit them: "pick up cup" not "pick up the cup")
+tool, object, thing, item
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+DENSE vs COARSE
+━━━━━━━━━━━━━━━━━━━━━━━━
+Default to DENSE: exact actions and objects, includes micro-actions, 1-3 atomics per segment.
+Use COARSE only when too many micro-actions occur within a 10s window to label densely:
+  - Focus on the main goal/objective only
+  - No micro-actions listed
+  - Still within 10s and still includes hand specification
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT — valid JSON only, no extra text
+━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "segments": [
     {
       "id": 1,
       "start": "HH:MM:SS",
       "end": "HH:MM:SS",
-      "label": "specific action label with hand specification"
+      "label": "action label with hand specification"
     }
   ]
 }
 
-Timestamps must match the HH:MM:SS format visible in the frames.
-First segment starts at the first frame's timestamp.
-Last segment ends at the last frame's timestamp.
+First segment starts at the first frame timestamp. Last segment ends at the last frame timestamp.
 """.strip()
 
 
@@ -77,6 +135,28 @@ def seconds_to_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def detect_rotation(video_path: str) -> int:
+    """Returns the rotation angle to correct (0, 90, 180, 270) from video metadata."""
+    cap = cv2.VideoCapture(video_path)
+    rotation = 0
+    # OpenCV exposes the rotation tag from container metadata
+    rot = cap.get(cv2.CAP_PROP_ORIENTATION_META)
+    cap.release()
+    if rot in (90, 180, 270):
+        rotation = int(rot)
+    return rotation
+
+
+def rotate_frame(frame, angle: int):
+    if angle == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if angle == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if angle == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
 def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], float]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -85,6 +165,7 @@ def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], 
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames_count / video_fps
+    rotation = detect_rotation(video_path)
 
     interval = 1.0 / frames_per_sec
     timestamps = []
@@ -102,6 +183,10 @@ def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], 
         if not ret:
             break
 
+        # Correct rotation so frames are always upright for the LLM
+        if rotation:
+            frame = rotate_frame(frame, rotation)
+
         # Resize to keep upload size reasonable (max 720p wide)
         h, w = frame.shape[:2]
         if w > 1280:
@@ -109,7 +194,7 @@ def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], 
             frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
             h, w = frame.shape[:2]
 
-        # Burn timestamp
+        # Burn timestamp in bottom-left
         time_str = seconds_to_hms(ts)
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(frame, time_str, (8, h - 12), font, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
@@ -126,33 +211,80 @@ def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], 
 
 
 def fetch_generation_cost(generation_id: str, api_key: str, base_url: str) -> float:
-    try:
-        resp = requests.get(
-            f"{base_url}/generation",
-            params={"id": generation_id},
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return float(resp.json().get("data", {}).get("total_cost", 0.0) or 0.0)
-    except Exception:
-        pass
+    import time
+    for _ in range(10):
+        time.sleep(3)
+        try:
+            resp = requests.get(
+                f"{base_url}/generation",
+                params={"id": generation_id},
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                cost = float(resp.json().get("data", {}).get("total_cost", 0.0) or 0.0)
+                if cost > 0:
+                    return cost
+        except Exception:
+            pass
     return 0.0
 
 
-def call_llm(frames: list[dict], context: str, api_key: str, model: str, base_url: str) -> tuple[list, int, float]:
+def load_screenshots(paths: list) -> list:
+    result = []
+    mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".bmp": "image/bmp"}
+    for p in paths:
+        try:
+            mime = mime_map.get(os.path.splitext(p)[1].lower(), "image/jpeg")
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            result.append({"mime": mime, "b64": b64})
+        except Exception:
+            pass
+    return result
+
+
+def call_llm(frames: list[dict], context: str, api_key: str, model: str, base_url: str, screenshots: list = []) -> tuple[list, int, float]:
     video_name_hint = f"Context: {context}" if context else ""
 
-    content = [
-        {
+    content = []
+
+    if screenshots:
+        content.append({
+            "type": "text",
+            "text": (
+                f"{len(screenshots)} reference screenshot(s) from a professional annotation tool (e.g. ELAN) are provided below. "
+                "Each screenshot shows an existing segmentation timeline with segment numbers, exact timestamps (start → end), and labels.\n\n"
+                "CRITICAL INSTRUCTIONS:\n"
+                "1. Extract the exact segment timestamps (start and end times) from these screenshots.\n"
+                "2. Use THOSE timestamps as your segment boundaries — do NOT create your own segmentation.\n"
+                "3. Your output must have the same number of segments shown in the screenshots, with the exact same start and end times.\n"
+                "4. Only generate the action labels for each predefined segment based on what you observe in the video frames."
+            ),
+        })
+        for s in screenshots:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{s['mime']};base64,{s['b64']}"},
+            })
+        content.append({
+            "type": "text",
+            "text": (
+                f"Now here are the {len(frames)} video frames to label. "
+                f"{video_name_hint}\n"
+                "Use the segment timestamps from the screenshots above and label each segment. "
+                "Return only valid JSON matching the format in your instructions."
+            ),
+        })
+    else:
+        content.append({
             "type": "text",
             "text": (
                 f"Annotate ALL actions in this video ({len(frames)} frames). "
                 f"{video_name_hint}\n"
                 "Return only valid JSON matching the format in your instructions."
             ),
-        }
-    ]
+        })
 
     for f in frames:
         content.append({
@@ -210,10 +342,11 @@ def main():
     parser.add_argument("--model", default="google/gemini-2.0-flash-001")
     parser.add_argument("--api-url", default="https://openrouter.ai/api/v1")
     parser.add_argument("--annotation-id", type=int, default=None)
+    parser.add_argument("--screenshots", nargs="*", default=[])
     args = parser.parse_args()
 
     # Default frames per second per tier (overridable by backend setting)
-    tier_defaults = {"basic": 0.1, "standard": 0.2, "premium": 0.5}
+    tier_defaults = {"basic": 2.0, "standard": 4.0, "premium": 8.0}
     fps = args.frames_per_sec or tier_defaults[args.tier]
 
     try:
@@ -221,12 +354,15 @@ def main():
         if not frames:
             raise RuntimeError("No frames extracted from video")
 
+        screenshots = load_screenshots(args.screenshots) if args.screenshots else []
+
         segments, tokens_used, cost_usd = call_llm(
             frames,
             context=args.context,
             api_key=args.api_key,
             model=args.model,
             base_url=args.api_url,
+            screenshots=screenshots,
         )
 
         emit(
