@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && env -u ELECTRON_RUN_AS_NODE electron .\"",
     "build": "vite build",
-    "dist": "vite build && electron-builder",
+    "dist": "vite build && electron-builder --publish always",
     "preview": "vite preview"
   },
   "dependencies": {
     "axios": "^1.7.2",
     "dotenv": "^16.4.5",
+    "electron-updater": "^6.8.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.2"
@@ -45,6 +46,11 @@
         "to": "process_video.py"
       }
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "bowenSteve",
+      "repo": "ATLAS-CAPPTURE-FRONTEND"
+    },
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",

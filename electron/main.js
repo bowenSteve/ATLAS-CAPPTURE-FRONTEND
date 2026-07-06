@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const { autoUpdater } = require("electron-updater");
 
 require("dotenv").config({ path: path.join(__dirname, "../../.env") });
 
@@ -17,6 +18,24 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
+
+function sendUpdateStatus(type, payload = {}) {
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send("update-status", { type, ...payload })
+  );
+}
+
+if (!isDev) {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+
+  autoUpdater.on("checking-for-update", () => sendUpdateStatus("checking"));
+  autoUpdater.on("update-available", (info) => sendUpdateStatus("available", { version: info.version }));
+  autoUpdater.on("update-not-available", () => sendUpdateStatus("not-available"));
+  autoUpdater.on("download-progress", (p) => sendUpdateStatus("downloading", { percent: Math.round(p.percent) }));
+  autoUpdater.on("update-downloaded", (info) => sendUpdateStatus("downloaded", { version: info.version }));
+  autoUpdater.on("error", (err) => sendUpdateStatus("error", { message: err.message }));
 }
 
 function createWindow() {
@@ -62,6 +81,25 @@ ipcMain.handle("open-output", (_, filePath) => shell.openPath(filePath));
 // ── Config ───────────────────────────────────────────────────────────────────
 ipcMain.handle("get-config", () => loadConfig());
 ipcMain.handle("save-config", (_, cfg) => { saveConfig(cfg); return true; });
+
+// ── Updates ──────────────────────────────────────────────────────────────────
+ipcMain.handle("get-app-version", () => app.getVersion());
+
+ipcMain.handle("check-for-updates", () => {
+  if (isDev) {
+    sendUpdateStatus("dev-mode");
+    return;
+  }
+  autoUpdater.checkForUpdates();
+});
+
+ipcMain.handle("download-update", () => {
+  autoUpdater.downloadUpdate();
+});
+
+ipcMain.handle("install-update", () => {
+  autoUpdater.quitAndInstall();
+});
 
 // ── Run process_video.py ─────────────────────────────────────────────────────
 ipcMain.handle("run-annotation", async (event, args) => {

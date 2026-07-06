@@ -9,4 +9,10 @@ contextBridge.exposeInMainWorld("electron", {
   runAnnotation: (args) => ipcRenderer.invoke("run-annotation", args),
   onProgress: (cb) => ipcRenderer.on("annotation-progress", (_, data) => cb(data)),
   removeProgressListener: () => ipcRenderer.removeAllListeners("annotation-progress"),
+  getAppVersion: () => ipcRenderer.invoke("get-app-version"),
+  checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+  downloadUpdate: () => ipcRenderer.invoke("download-update"),
+  installUpdate: () => ipcRenderer.invoke("install-update"),
+  onUpdateStatus: (cb) => ipcRenderer.on("update-status", (_, data) => cb(data)),
+  removeUpdateListener: () => ipcRenderer.removeAllListeners("update-status"),
 });
