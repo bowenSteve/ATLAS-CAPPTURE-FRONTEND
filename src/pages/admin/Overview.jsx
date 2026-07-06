@@ -147,7 +147,7 @@ export default function Overview() {
                   </span>
                 </td>
                 <td className="px-4 py-2.5 text-gray-400">
-                  {new Date(a.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  {new Date(a.created_at).toLocaleString("en-KE", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Africa/Nairobi" })}
                 </td>
               </tr>
             ))}

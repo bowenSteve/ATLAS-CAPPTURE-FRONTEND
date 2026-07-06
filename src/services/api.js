@@ -57,8 +57,8 @@ export async function completeAnnotation(annotationId, segments, tokensUsed, cos
   return data;
 }
 
-export async function failAnnotation(annotationId) {
-  const { data } = await axios.post(`${BASE}/api/annotations/fail`, { annotation_id: annotationId }, auth());
+export async function failAnnotation(annotationId, errorMessage = "") {
+  const { data } = await axios.post(`${BASE}/api/annotations/fail`, { annotation_id: annotationId, error_message: errorMessage }, auth());
   return data; // { credits_refunded }
 }
 

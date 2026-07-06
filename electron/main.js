@@ -115,6 +115,7 @@ ipcMain.handle("run-annotation", async (event, args) => {
 
     proc.stderr.on("data", (chunk) => {
       const text = chunk.toString();
+      console.error("[Python]", text.trim());
       stderrLines.push(text);
       event.sender.send("annotation-progress", { event: "log", message: text });
     });

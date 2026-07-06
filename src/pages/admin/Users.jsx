@@ -100,7 +100,7 @@ export default function Users() {
                   <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">{u.annotation_count}</td>
                   <td className="px-4 py-2.5 text-gray-400">
                     {u.last_active
-                      ? new Date(u.last_active).toLocaleDateString()
+                      ? new Date(u.last_active).toLocaleDateString("en-KE", { timeZone: "Africa/Nairobi" })
                       : "—"}
                   </td>
                   <td className="px-4 py-2.5">

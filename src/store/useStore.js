@@ -33,7 +33,7 @@ const useStore = create((set) => ({
   // annotation job
   videoPath: null,
   videoName: null,
-  tier: "standard",
+  tier: "basic",
   context: "",
   setVideoPath: (videoPath) => set({
     videoPath,

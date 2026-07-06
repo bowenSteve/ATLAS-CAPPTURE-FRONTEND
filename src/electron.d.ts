@@ -1,6 +1,7 @@
 interface Window {
   electron: {
     selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
+    selectFiles: (filters?: { name: string; extensions: string[] }[]) => Promise<string[]>;
     openOutput: (filePath: string) => Promise<void>;
     getConfig: () => Promise<{ backendUrl: string }>;
     saveConfig: (cfg: { backendUrl: string }) => Promise<boolean>;
@@ -13,8 +14,9 @@ interface Window {
       model: string;
       apiUrl: string;
       annotationId: number;
+      screenshotPaths?: string[];
     }) => Promise<{
-      segments: unknown[];
+      segments: { id: number; start: string; end: string; label: string }[];
       tokens_used: number;
       cost_usd: number;
       segment_count: number;

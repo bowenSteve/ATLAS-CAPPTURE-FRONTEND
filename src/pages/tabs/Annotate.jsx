@@ -7,21 +7,21 @@ const TIERS = [
     id: "basic",
     label: "Basic",
     credits: 1,
-    fps: 2.0,
+    fps: 1.0,
     desc: "Good accuracy",
   },
   {
     id: "standard",
     label: "Standard",
     credits: 2,
-    fps: 4.0,
+    fps: 2.0,
     desc: "High accuracy",
   },
   {
     id: "premium",
     label: "Premium",
     credits: 3,
-    fps: 8.0,
+    fps: 4.0,
     desc: "Highest accuracy",
   },
 ];
@@ -30,6 +30,8 @@ export default function Annotate() {
   const { videoPath, videoName, tier, context, setVideoPath, setTier, setContext, user, setCredits, setLastResult } = useStore();
   const [phase, setPhase] = useState("idle"); // idle | extracting | annotating | done | error
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [llmProgress, setLlmProgress] = useState({ done: 0, total: 1 });
+  const [streamChars, setStreamChars] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
@@ -91,6 +93,13 @@ export default function Annotate() {
       } else if (data.event === "annotating") {
         setPhase("annotating");
         setProgress({ current: 0, total: data.frame_count });
+        setLlmProgress({ done: 0, total: data.chunks_total || 1 });
+      } else if (data.event === "annotating_progress") {
+        setLlmProgress({ done: data.chunks_done, total: data.chunks_total });
+      } else if (data.event === "stream_chars") {
+        setStreamChars(data.chars);
+      } else if (data.event === "log") {
+        console.log("[Python stderr]", data.message);
       } else if (data.event === "error") {
         errorHandledRef.current = true;
         setPhase("error");
@@ -132,7 +141,7 @@ export default function Annotate() {
         setErrorMsg(msg);
       }
       if (annotationIdRef.current) {
-        failAnnotation(annotationIdRef.current).then((r) => {
+        failAnnotation(annotationIdRef.current, errorHandledRef.current ? errorMsg : msg).then((r) => {
           if (r?.credits_refunded) setCredits((c) => c + r.credits_refunded);
         }).catch(() => {});
       }
@@ -146,11 +155,14 @@ export default function Annotate() {
     setResult(null);
     setErrorMsg("");
     setProgress({ current: 0, total: 0 });
+    setLlmProgress({ done: 0, total: 1 });
+    setStreamChars(0);
     setScreenshots([]);
   }
 
   const selectedTier = TIERS.find((t) => t.id === tier);
   const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+  const streamPct = progress.total > 0 ? Math.min(95, Math.round((streamChars / (progress.total * 2)) * 100)) : 0;
 
   return (
     <div className="max-w-2xl mx-auto p-6">
@@ -317,23 +329,55 @@ export default function Annotate() {
             <p className="text-sm text-gray-400 mt-1">
               {phase === "extracting"
                 ? `Frame ${progress.current} of ${progress.total}`
-                : "This may take a moment..."}
+                : llmProgress.total > 1
+                  ? `Part ${llmProgress.done} of ${llmProgress.total} complete`
+                  : "This may take a moment..."}
             </p>
           </div>
-          {progress.total > 0 && (
+
+          {phase === "extracting" && progress.total > 0 && (
             <>
               <div className="bg-gray-200 dark:bg-gray-800 rounded-full h-2 mb-2">
                 <div
                   className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${phase === "annotating" ? 100 : pct}%` }}
+                  style={{ width: `${pct}%` }}
                 />
               </div>
-              {phase === "extracting" && (
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>{progress.current} / {progress.total} frames</span>
-                  <span>{pct}%</span>
-                </div>
-              )}
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>{progress.current} / {progress.total} frames</span>
+                <span>{pct}%</span>
+              </div>
+            </>
+          )}
+
+          {phase === "annotating" && (
+            <>
+              <div className="bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mb-2 overflow-hidden">
+                {llmProgress.total > 1 ? (
+                  <div
+                    className="bg-indigo-500 h-2.5 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.round((llmProgress.done / llmProgress.total) * 100)}%` }}
+                  />
+                ) : (
+                  <div
+                    className="bg-indigo-500 h-2.5 rounded-full transition-all duration-300"
+                    style={{ width: `${Math.max(4, streamPct)}%` }}
+                  />
+                )}
+              </div>
+              <div className="flex justify-between text-xs text-gray-400">
+                {llmProgress.total > 1 ? (
+                  <>
+                    <span>{llmProgress.done} of {llmProgress.total} parts done</span>
+                    <span>{Math.round((llmProgress.done / llmProgress.total) * 100)}%</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Processing your video...</span>
+                    <span>{streamPct}%</span>
+                  </>
+                )}
+              </div>
             </>
           )}
         </div>

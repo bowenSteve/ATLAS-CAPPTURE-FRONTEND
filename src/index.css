@@ -13,3 +13,12 @@ body {
 
 .drag { -webkit-app-region: drag; }
 .drag button, .drag a { -webkit-app-region: no-drag; }
+
+@keyframes progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.progress-indeterminate {
+  width: 30%;
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
