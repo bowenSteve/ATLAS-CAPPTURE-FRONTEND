@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { adminOverview, adminOpenRouterBalance } from "../../services/api";
+import { useState, useEffect, useCallback } from "react";
+import { adminOverview, adminOpenRouterBalance, adminListAnnotations } from "../../services/api";
 
 function KPI({ label, value, sub, highlight }) {
   return (
@@ -30,11 +30,18 @@ function BalanceBar({ usage, limit }) {
   );
 }
 
+const ANN_LIMIT = 10;
+
 export default function Overview() {
   const [data, setData] = useState(null);
   const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const [annItems, setAnnItems] = useState([]);
+  const [annTotal, setAnnTotal] = useState(0);
+  const [annPage, setAnnPage] = useState(0);
+  const [annLoading, setAnnLoading] = useState(true);
 
   function fetchData(isRefresh = false) {
     if (isRefresh) setRefreshing(true);
@@ -51,7 +58,18 @@ export default function Overview() {
     });
   }
 
+  const loadAnnotations = useCallback(async () => {
+    setAnnLoading(true);
+    try {
+      const result = await adminListAnnotations(annPage * ANN_LIMIT, ANN_LIMIT);
+      setAnnItems(result.items);
+      setAnnTotal(result.total);
+    } catch {}
+    setAnnLoading(false);
+  }, [annPage]);
+
   useEffect(() => { fetchData(); }, []);
+  useEffect(() => { loadAnnotations(); }, [loadAnnotations]);
 
   if (loading) return <div className="p-6 text-gray-400 text-sm">Loading…</div>;
   if (!data) return <div className="p-6 text-red-400 text-sm">Failed to load overview.</div>;
@@ -61,7 +79,7 @@ export default function Overview() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-bold text-gray-900 dark:text-white">Overview</h2>
         <button
-          onClick={() => fetchData(true)}
+          onClick={() => { fetchData(true); loadAnnotations(); }}
           disabled={refreshing}
           className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition disabled:opacity-50"
         >
@@ -115,45 +133,76 @@ export default function Overview() {
         />
       </div>
 
-      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Recent Annotations</h3>
-      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden">
-        <table className="w-full text-xs">
-          <thead className="border-b border-gray-100 dark:border-gray-800">
-            <tr className="text-gray-400">
-              <th className="text-left px-4 py-3 font-medium">User</th>
-              <th className="text-left px-4 py-3 font-medium">Video</th>
-              <th className="text-left px-4 py-3 font-medium">Tier</th>
-              <th className="text-left px-4 py-3 font-medium">Tokens</th>
-              <th className="text-left px-4 py-3 font-medium">Cost</th>
-              <th className="text-left px-4 py-3 font-medium">Status</th>
-              <th className="text-left px-4 py-3 font-medium">Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.recent_annotations.map((a) => (
-              <tr key={a.id} className="border-b border-gray-50 dark:border-gray-800 last:border-0">
-                <td className="px-4 py-2.5 text-gray-600 dark:text-gray-300 truncate max-w-[120px]">{a.user_email}</td>
-                <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 truncate max-w-[120px]">{a.video_name}</td>
-                <td className="px-4 py-2.5">
-                  <span className="text-indigo-600 dark:text-indigo-400 capitalize">{a.tier}</span>
-                </td>
-                <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">{a.tokens_used?.toLocaleString()}</td>
-                <td className="px-4 py-2.5 text-indigo-600 dark:text-indigo-400 font-medium">
-                  {a.cost_usd > 0 ? `$${a.cost_usd.toFixed(4)}` : "—"}
-                </td>
-                <td className="px-4 py-2.5">
-                  <span className={a.status === "done" ? "text-slate-700 dark:text-slate-300" : a.status === "failed" ? "text-red-400" : "text-slate-400"}>
-                    {a.status}
-                  </span>
-                </td>
-                <td className="px-4 py-2.5 text-gray-400">
-                  {new Date(a.created_at).toLocaleString("en-KE", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Africa/Nairobi" })}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Recent Annotations</h3>
+        {annTotal > 0 && <span className="text-xs text-gray-400">{annTotal} total</span>}
       </div>
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden">
+        {annLoading ? (
+          <div className="py-10 text-center text-gray-400 text-sm">Loading…</div>
+        ) : annItems.length === 0 ? (
+          <div className="py-10 text-center text-gray-400 text-sm">No annotations yet.</div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="border-b border-gray-100 dark:border-gray-800">
+              <tr className="text-gray-400">
+                <th className="text-left px-4 py-3 font-medium">User</th>
+                <th className="text-left px-4 py-3 font-medium">Video</th>
+                <th className="text-left px-4 py-3 font-medium">Tier</th>
+                <th className="text-left px-4 py-3 font-medium">Tokens</th>
+                <th className="text-left px-4 py-3 font-medium">Cost</th>
+                <th className="text-left px-4 py-3 font-medium">Status</th>
+                <th className="text-left px-4 py-3 font-medium">Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {annItems.map((a) => (
+                <tr key={a.id} className="border-b border-gray-50 dark:border-gray-800 last:border-0">
+                  <td className="px-4 py-2.5 text-gray-600 dark:text-gray-300 truncate max-w-[120px]">{a.user_email}</td>
+                  <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 truncate max-w-[120px]">{a.video_name}</td>
+                  <td className="px-4 py-2.5">
+                    <span className="text-indigo-600 dark:text-indigo-400 capitalize">{a.tier}</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">{a.tokens_used?.toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-indigo-600 dark:text-indigo-400 font-medium">
+                    {a.cost_usd > 0 ? `$${a.cost_usd.toFixed(4)}` : "—"}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={a.status === "done" ? "text-slate-700 dark:text-slate-300" : a.status === "failed" ? "text-red-400" : "text-slate-400"}>
+                      {a.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-gray-400">
+                    {new Date(a.created_at).toLocaleString("en-KE", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Africa/Nairobi" })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {annTotal > ANN_LIMIT && (
+        <div className="flex items-center justify-center gap-4 mt-4">
+          <button
+            disabled={annPage === 0}
+            onClick={() => setAnnPage((p) => p - 1)}
+            className="text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 transition"
+          >
+            ← Previous
+          </button>
+          <span className="text-sm text-gray-400">
+            {annPage + 1} / {Math.ceil(annTotal / ANN_LIMIT)}
+          </span>
+          <button
+            disabled={(annPage + 1) * ANN_LIMIT >= annTotal}
+            onClick={() => setAnnPage((p) => p + 1)}
+            className="text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 transition"
+          >
+            Next →
+          </button>
+        </div>
+      )}
     </div>
   );
 }

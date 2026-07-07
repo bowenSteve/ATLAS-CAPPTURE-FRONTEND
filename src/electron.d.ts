@@ -23,6 +23,7 @@ interface Window {
       duration: number;
       annotation_id: number;
     }>;
+    cancelAnnotation: (annotationId: number) => Promise<boolean>;
     onProgress: (cb: (data: Record<string, unknown>) => void) => void;
     removeProgressListener: () => void;
   };

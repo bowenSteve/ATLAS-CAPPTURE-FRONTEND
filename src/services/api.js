@@ -94,6 +94,11 @@ export async function adminListUsers(skip = 0, limit = 50, search = "") {
   return data;
 }
 
+export async function adminListAnnotations(skip = 0, limit = 20) {
+  const { data } = await axios.get(`${BASE}/api/admin/annotations`, { ...auth(), params: { skip, limit } });
+  return data; // { total, items }
+}
+
 export async function adminUpdateUser(id, updates) {
   const { data } = await axios.patch(`${BASE}/api/admin/users/${id}`, updates, auth());
   return data;

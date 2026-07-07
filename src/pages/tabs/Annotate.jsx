@@ -38,6 +38,7 @@ export default function Annotate() {
   const [screenshots, setScreenshots] = useState([]);
   const [partialSegments, setPartialSegments] = useState([]);
   const [warnings, setWarnings] = useState([]);
+  const [cancelling, setCancelling] = useState(false);
   const annotationIdRef = useRef(null);
   const errorHandledRef = useRef(false);
 
@@ -142,20 +143,31 @@ export default function Annotate() {
       setLastResult(resultData);
       setPhase("done");
     } catch (err) {
-      if (!errorHandledRef.current) {
-        // Strip Electron's IPC wrapper prefix to show the real Python error
-        const msg = err.message.replace(/^Error invoking remote method '[^']+': /, "");
+      // Strip Electron's IPC wrapper prefix to show the real Python error
+      const msg = err.message.replace(/^Error invoking remote method '[^']+': /, "");
+      const wasCancelled = msg.includes("CANCELLED");
+      if (wasCancelled) {
+        reset();
+      } else if (!errorHandledRef.current) {
         setPhase("error");
         setErrorMsg(msg);
       }
       if (annotationIdRef.current) {
-        failAnnotation(annotationIdRef.current, errorHandledRef.current ? errorMsg : msg).then((r) => {
+        const reason = wasCancelled ? "Cancelled by user" : (errorHandledRef.current ? errorMsg : msg);
+        failAnnotation(annotationIdRef.current, reason).then((r) => {
           if (r?.credits_refunded) setCredits((c) => c + r.credits_refunded);
         }).catch(() => {});
       }
     } finally {
       window.electron.removeProgressListener();
+      setCancelling(false);
     }
+  }
+
+  function handleCancel() {
+    if (!annotationIdRef.current || cancelling) return;
+    setCancelling(true);
+    window.electron.cancelAnnotation(annotationIdRef.current);
   }
 
   function reset() {
@@ -167,6 +179,7 @@ export default function Annotate() {
     setStreamChars(0);
     setPartialSegments([]);
     setScreenshots([]);
+    setCancelling(false);
   }
 
   const selectedTier = TIERS.find((t) => t.id === tier);
@@ -404,6 +417,14 @@ export default function Annotate() {
               )}
             </>
           )}
+
+          <button
+            onClick={handleCancel}
+            disabled={cancelling}
+            className="w-full mt-6 bg-gray-100 dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50 text-gray-600 dark:text-gray-300 hover:text-red-600 dark:hover:text-red-400 font-medium py-2.5 rounded-xl text-sm transition"
+          >
+            {cancelling ? "Cancelling…" : "Cancel Annotation"}
+          </button>
         </div>
       )}
 

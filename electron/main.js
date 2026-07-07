@@ -102,6 +102,16 @@ ipcMain.handle("install-update", () => {
 });
 
 // ── Run process_video.py ─────────────────────────────────────────────────────
+const runningAnnotations = new Map(); // annotationId -> { proc, cancelled }
+
+ipcMain.handle("cancel-annotation", (_, annotationId) => {
+  const entry = runningAnnotations.get(String(annotationId));
+  if (!entry) return false;
+  entry.cancelled = true;
+  entry.proc.kill();
+  return true;
+});
+
 ipcMain.handle("run-annotation", async (event, args) => {
   const { videoPath, tier, framesPerSec, context, apiKey, model, apiUrl, annotationId, screenshotPaths = [] } = args;
 
@@ -133,6 +143,9 @@ ipcMain.handle("run-annotation", async (event, args) => {
     proc = spawn("python3", [pyScript, ...scriptArgs], { env: { ...process.env } });
   }
 
+  const procEntry = { proc, cancelled: false };
+  runningAnnotations.set(String(annotationId), procEntry);
+
   return new Promise((resolve, reject) => {
 
     let lastResult = null;
@@ -159,7 +172,10 @@ ipcMain.handle("run-annotation", async (event, args) => {
     });
 
     proc.on("close", (code) => {
-      if (code === 0 && lastResult) {
+      runningAnnotations.delete(String(annotationId));
+      if (procEntry.cancelled) {
+        reject(new Error("CANCELLED"));
+      } else if (code === 0 && lastResult) {
         resolve(lastResult);
       } else {
         const detail = pythonError || stderrLines.join("").trim().split("\n").pop() || `Exit code ${code}`;
