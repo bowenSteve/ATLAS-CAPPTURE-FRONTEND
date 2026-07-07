@@ -26,7 +26,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pyinstaller opencv-python-headless requests python-dotenv
+        run: pip install pyinstaller opencv-python-headless requests python-dotenv numpy
 
       - name: Build process_video.exe
         run: pyinstaller process_video.spec

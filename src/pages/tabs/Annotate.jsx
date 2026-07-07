@@ -36,6 +36,8 @@ export default function Annotate() {
   const [result, setResult] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [screenshots, setScreenshots] = useState([]);
+  const [partialSegments, setPartialSegments] = useState([]);
+  const [warnings, setWarnings] = useState([]);
   const annotationIdRef = useRef(null);
   const errorHandledRef = useRef(false);
 
@@ -70,6 +72,7 @@ export default function Annotate() {
     setProgress({ current: 0, total: 0 });
     setErrorMsg("");
     setResult(null);
+    setWarnings([]);
 
     let sessionData;
     try {
@@ -98,6 +101,11 @@ export default function Annotate() {
         setLlmProgress({ done: data.chunks_done, total: data.chunks_total });
       } else if (data.event === "stream_chars") {
         setStreamChars(data.chars);
+      } else if (data.event === "partial_segments") {
+        setPartialSegments(data.segments || []);
+      } else if (data.event === "warning") {
+        console.warn("[Extraction warning]", data.message);
+        setWarnings(prev => [...prev, data.message]);
       } else if (data.event === "log") {
         console.log("[Python stderr]", data.message);
       } else if (data.event === "error") {
@@ -157,6 +165,7 @@ export default function Annotate() {
     setProgress({ current: 0, total: 0 });
     setLlmProgress({ done: 0, total: 1 });
     setStreamChars(0);
+    setPartialSegments([]);
     setScreenshots([]);
   }
 
@@ -330,8 +339,8 @@ export default function Annotate() {
               {phase === "extracting"
                 ? `Frame ${progress.current} of ${progress.total}`
                 : llmProgress.total > 1
-                  ? `Part ${llmProgress.done} of ${llmProgress.total} complete`
-                  : "This may take a moment..."}
+                  ? `Segment ${llmProgress.done} of ${llmProgress.total} labeled`
+                  : "Extracting segment timestamps…"}
             </p>
           </div>
 
@@ -368,7 +377,7 @@ export default function Annotate() {
               <div className="flex justify-between text-xs text-gray-400">
                 {llmProgress.total > 1 ? (
                   <>
-                    <span>{llmProgress.done} of {llmProgress.total} parts done</span>
+                    <span>{llmProgress.done} of {llmProgress.total} segments labeled</span>
                     <span>{Math.round((llmProgress.done / llmProgress.total) * 100)}%</span>
                   </>
                 ) : (
@@ -378,6 +387,21 @@ export default function Annotate() {
                   </>
                 )}
               </div>
+
+              {partialSegments.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-xs text-gray-400 mb-2">{partialSegments.length} segments labeled so far…</p>
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                    {partialSegments.map((seg) => (
+                      <div key={seg.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl px-4 py-2.5 flex gap-3 opacity-80">
+                        <div className="text-xs text-gray-400 font-mono mt-0.5 shrink-0 w-16">{seg.start}</div>
+                        <div className="text-xs text-gray-400 font-mono mt-0.5 shrink-0">→ {seg.end}</div>
+                        <div className="text-sm text-gray-700 dark:text-gray-300 flex-1">{seg.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -416,6 +440,17 @@ export default function Annotate() {
               </div>
             </div>
           </div>
+
+          {warnings.length > 0 && (
+            <div className="mb-4 space-y-1.5">
+              {warnings.map((w, i) => (
+                <div key={i} className="flex gap-2 items-start bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                  <span className="shrink-0 mt-0.5">⚠</span>
+                  <span>{w}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="space-y-2 max-h-96 overflow-y-auto pr-1 mb-5">
             {result.segments?.map((seg) => (

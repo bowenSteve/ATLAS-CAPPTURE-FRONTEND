@@ -17,8 +17,10 @@ import shutil
 import re
 import threading
 import cv2
+import numpy as np
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 CHUNK_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".atlas_capture", "chunk_cache")
 CHUNK_CACHE_TTL = 86400  # 24 hours
@@ -59,8 +61,10 @@ WHAT TO LABEL
 ✓ Goal-oriented hand-object actions relevant to the task
 ✓ Both left and right hand usage during hand-object interactions
 ✓ Object transfers between hands (e.g. "pass tray in right hand to left hand")
+✓ Holding MANIPULATABLE objects (e.g. "hold cup with left hand, wipe cup with cloth in right hand")
 
 ✗ Do NOT label: walking/navigation, looking/inspecting/checking, idle gestures, camera or face touches, irrelevant side actions
+✗ Do NOT label holding large stationary objects (tables, walls)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 LABEL FORMAT
@@ -69,7 +73,7 @@ LABEL FORMAT
    ✓ pick up spoon with right hand
    ✗ the spoon is picked with right hand
 
-2. HAND SPECIFICATION required in every label: "with left hand", "with right hand", or "with both hands"
+2. HAND SPECIFICATION — include when it adds meaningful information. Specify per-action only when hands differ (e.g. "hold towel with left hand, fold with right hand"). When both hands do the same thing, one mention is enough (e.g. "fold and smoothen towel with both hands"). Use judgment — don't force it awkwardly.
 
 3. 1-3 ATOMIC ACTIONS per segment, separated by comma or "and"
    ✓ pick up cup with left hand, place cup on table with left hand
@@ -91,7 +95,7 @@ SEGMENTATION RULES
 - Do NOT bleed actions into neighboring segments
 - Max segment duration: 10 seconds — this is a HARD LIMIT. Never create a segment longer than 10 seconds.
   If the same action continues for longer than 10 seconds, split it into consecutive segments with the same label.
-  Example: a 25-second tightening action → three segments: 0-10s, 10-20s, 20-25s, all labeled "tighten bolt with screwdriver with both hands"
+  Example: a 25-second smoothen action → three segments: 0-10s, 10-20s, 20-25s, all labeled "smoothen towel with both hands"
 - Cover the entire video with NO gaps from first frame to last frame
 
 NO ACTION: label "no action" only when hands touch nothing for more than 5 consecutive seconds, or ego is idle/irrelevant for more than 5s. Do not split a segment just because the ego pauses. Idle periods of 5s or less are absorbed into the adjacent segment.
@@ -102,18 +106,28 @@ VERB RULES
 Object leaves a surface → "pick up"  (never: pick, take, grasp)
 Object contacts a surface → "place [general location]"  (e.g. "place cup on table", not "place cup on upper-left of table")
 Object moved between locations → "reposition"
-Instead of "adjust" → use "shift" or "reposition"
+
+Instead of "adjust" → choose the most precise verb:
+  shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
+
+Instead of "manipulate" → choose the most precise verb:
+  grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+
 Instead of "move" / "transfer" → use "pick up" and "place"
+
+Object exchanges between hands → use: hand over, put, pass, switch, set
+  (NOT: transfer, handover, give)
+
 Do NOT invent steps that are not visible in the frames.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 OBJECT NAMING
 ━━━━━━━━━━━━━━━━━━━━━━━━
 - NEVER use "tool", "object", "thing", "item" — always name the actual object
-- If you cannot identify the exact tool name, describe it by visual properties: color + shape + function
+- If you cannot identify the exact object, describe it by visual properties: color + shape + function
   e.g. "silver hex wrench", "red-handled screwdriver", "black allen key", "yellow spray can"
 - Use the context field to infer domain-specific names (e.g. "pivot bolt", "derailleur cable", "suspension linkage")
-- Use color/shape to disambiguate similar objects when context doesn't specify
+- Use adjectives (color, pattern, size, state) only to disambiguate two or more similar objects — otherwise keep it simple
 - Multiple identical objects acted on at once: use collective plural ("pick up knives", not "pick up 3 knives")
 - Multiple different objects held simultaneously: list them ("hold pliers and hammer with right hand")
 
@@ -122,8 +136,9 @@ FORBIDDEN WORDS — never use these
 ━━━━━━━━━━━━━━━━━━━━━━━━
 adjust, manipulate, move, transfer, inspect, check, examine, reach
 pick (alone), take, grasp
+handover, give  (for object hand-off — use pass, put, hand over instead)
 it, them, they  (pronouns — always use the object name)
--ing form of any verb  (use base form: "pick up" not "picking up", "place" not "placing", "fold" not "folding")
+-ing form of any verb  (use base form: "pick up" not "picking up", "fold" not "folding", "smoothen" not "smoothening")
 the, a, an  (articles — omit them: "pick up cup" not "pick up the cup")
 tool, object, thing, item
 
@@ -152,6 +167,149 @@ OUTPUT FORMAT — valid JSON only, no extra text
 
 First segment starts at the first frame timestamp. Last segment ends at the last frame timestamp.
 """.strip()
+
+
+LABELING_SYSTEM_PROMPT = """
+You are an expert labeler for egocentric (first-person) video footage captured by a wearable camera.
+
+You will receive:
+1. A sequence of video frames with timestamps burned in (HH:MM:SS format)
+2. A list of pre-defined segments with fixed start and end times
+
+Your ONLY task: write the correct action label for each pre-defined segment, based on what you observe in the video frames for that time window. The timestamps are fixed — do NOT change them or invent new segments. Output EXACTLY the same number of segments as given.
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT TO LABEL
+━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Goal-oriented hand-object actions
+✓ Both left and right hand usage during interactions
+✓ Holding MANIPULATABLE objects (e.g. "hold cup with left hand, wipe cup with cloth in right hand")
+✓ Object exchanges between hands (e.g. "pass towel in right hand to left hand")
+
+✗ Do NOT label: walking/navigation, looking/checking, idle gestures, camera or face touches
+✗ Do NOT label holding large stationary objects (tables, walls)
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+LABEL FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━
+1. IMPERATIVE VOICE — write as a command
+   ✓ pick up spoon with right hand
+   ✗ the spoon is picked with right hand
+
+2. HAND SPECIFICATION — include when it adds meaningful information. Specify per-action only when hands differ. When both hands do the same thing, one mention is enough. Use judgment — don't force it awkwardly.
+
+3. 1-3 ATOMIC ACTIONS per segment, separated by comma or "and"
+   ✓ pick up cup with left hand, place cup on table with left hand
+   ✓ hold sponge with left hand and pick up plate with right hand
+
+4. Under 20 words; all words must be true for the ENTIRE segment duration
+
+5. DO NOT label intent — label what is actually happening
+   ✓ cut tape with scissors with right hand
+   ✗ pick up scissors to cut tape with right hand
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+VERB RULES
+━━━━━━━━━━━━━━━━━━━━━━━━
+Object leaves surface → "pick up"  (never: pick, take, grasp)
+Object contacts surface → "place [location]"
+Object moved between locations → "reposition"
+
+Instead of "adjust" → use the most precise: shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
+Instead of "manipulate" → use the most precise: grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+Object hand-off → use: hand over, put, pass, switch, set  (NOT: transfer, handover, give)
+
+NO ACTION: only when hands touch nothing AND ego is idle for the ENTIRE segment duration (more than 5s with no hand-object contact).
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+FORBIDDEN WORDS
+━━━━━━━━━━━━━━━━━━━━━━━━
+adjust, manipulate, move, transfer, inspect, check, examine, reach
+pick (alone), take, grasp, handover, give
+it, them, they  (use the object name)
+-ing form of any verb  (fold not folding, smoothen not smoothening, pick up not picking up)
+the, a, an  (no articles)
+tool, object, thing, item
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT — valid JSON only, no extra text
+━━━━━━━━━━━━━━━━━━━━━━━━
+{
+  "segments": [
+    {
+      "id": 1,
+      "start": "HH:MM:SS",
+      "end": "HH:MM:SS",
+      "label": "action label with hand specification"
+    }
+  ]
+}
+""".strip()
+
+
+_FORBIDDEN_WORD_MAP = {
+    # word/phrase → replacement
+    r"\badjust\b": "reposition",
+    r"\bmanipulate\b": "work with",
+    r"\btransfer\b": "pass",
+    r"\bhandover\b": "hand over",
+    r"\bgive\b": "pass",
+    r"\binspect\b": "examine visually",   # will be caught and replaced with better verb below
+    r"\bcheck\b": "verify",
+    r"\bexamine\b": "look at",
+    r"\breach\b": "extend hand toward",
+    r"\bgrasp\b": "grip",
+    r"\btake\b": "pick up",
+    r"\b(pick|grasp|take)\s+(?!up\b)": "pick up ",
+    r"\bthe\s+": "",
+    r"\ba\s+(?=[a-z])": "",
+    r"\ban\s+(?=[aeiou])": "",
+}
+
+# These warrant a flag to the UI rather than silent replacement
+_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give"}
+
+_VERB_ING_RE = re.compile(
+    r"\b(pick(?:ing)?(?:\s+up)?|plac|fold|smooth(?:en)?|grip|hold|rotat|flip|tuck|flatten|align|loosen|tighten|push|pull|press|twist|squeez|pinch|assembl|apply)ing\b",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_label(label: str) -> tuple[str, list[str]]:
+    """
+    Remove common guideline violations from a label string.
+    Returns (cleaned_label, list_of_warnings).
+    """
+    warnings = []
+    cleaned = label
+
+    # Fix -ing verbs → base form
+    def _fix_ing(m):
+        stem = m.group(1)
+        # Special case: "picking up" → "pick up"
+        if stem.lower().startswith("pick"):
+            return "pick up"
+        return stem.rstrip("e") if stem.endswith("e") else stem
+
+    cleaned = _VERB_ING_RE.sub(_fix_ing, cleaned)
+
+    # Log hard forbidden words as warnings but leave the label unchanged
+    for word in _HARD_FORBIDDEN:
+        pattern = re.compile(rf"\b{re.escape(word)}\w*\b", re.IGNORECASE)
+        if pattern.search(cleaned):
+            warnings.append(f'Forbidden word "{word}" in label — please review')
+
+    # Strip articles before nouns (simple heuristic)
+    cleaned = re.sub(r"\b(the|an?) (?=[a-zA-Z])", "", cleaned)
+
+    # Replace ' and ' between actions with ', '
+    # e.g. "pick up bottle with right hand and rotate bottle" → "pick up bottle with right hand, rotate bottle"
+    cleaned = re.sub(r"\s+and\s+", ", ", cleaned)
+
+    # Collapse multiple spaces
+    cleaned = re.sub(r"  +", " ", cleaned).strip()
+
+    return cleaned, warnings
 
 
 def emit(event: str, **kwargs):
@@ -251,6 +409,35 @@ def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], 
     return frames, duration
 
 
+def _extract_json(text: str) -> dict:
+    """
+    Robustly extract the first valid JSON object from an LLM response.
+    Handles markdown code fences, trailing commas, and truncated responses.
+    """
+    # Strip markdown code fences
+    text = re.sub(r"```(?:json)?\s*", "", text).strip()
+
+    # Try progressively smaller matches if the greedy match fails to parse
+    for m in re.finditer(r"\{", text):
+        start = m.start()
+        # Walk forward to find the matching closing brace
+        depth = 0
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : i + 1]
+                    # Remove trailing commas before ] or } (common LLM mistake)
+                    candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break  # try next opening brace
+    raise RuntimeError("LLM response contained no parseable JSON object")
+
+
 def fetch_generation_cost(generation_id: str, api_key: str, base_url: str) -> float:
     import time
     for _ in range(10):
@@ -287,47 +474,713 @@ def load_screenshots(paths: list) -> list:
 
 CHUNK_SIZE = 200  # frames per parallel LLM call
 
+TIMESTAMP_EXTRACTION_PROMPT = """
+You are an annotation extraction assistant. You will receive one or more screenshots from a professional video annotation tool (e.g. ELAN, Anvil, BORIS).
+
+Your task: extract EVERY segment visible in the screenshot(s) — start time, end time, and action label.
+
+CRITICAL — DO NOT SKIP SEGMENTS:
+- Count the numbered rows in the screenshot (1, 2, 3, …). Your JSON must have exactly that many segments.
+- If you can see segment 6 ends at time X and segment 8 starts at time Y, segment 7 MUST also be in your output.
+- A segment with no visible label should still appear with label "".
+- If multiple screenshots are provided, combine all segments from all screenshots.
+
+Timestamp format rules:
+  - Input may be: M:SS.s (e.g. 1:27.3), MM:SS, HH:MM:SS, or bare seconds (e.g. 87.3)
+  - Convert ALL to HH:MM:SS, zero-padded, no decimals — round to nearest second
+  - Examples: 0:06.3 → 00:00:06 | 1:27.3 → 00:01:27 | 95.0 → 00:01:35 | 0:51.1 → 00:00:51
+
+Return ONLY valid JSON — no markdown, no explanation:
+{"segments": [{"id": 1, "start": "HH:MM:SS", "end": "HH:MM:SS", "label": "exact label text"}, ...]}
+
+Rules:
+- Every numbered segment in the screenshot must appear in the output
+- Order chronologically by start time
+- Copy labels verbatim — do not paraphrase, translate, or correct them
+""".strip()
+
+
+def _extract_timestamps(screenshots: list, api_key: str, model: str, base_url: str) -> list:
+    """Pass 1: extract segment timestamps and existing labels from annotation tool screenshots."""
+    content = [
+        {"type": "text", "text": f"Extract all segments (timestamps and labels) from the {len(screenshots)} annotation screenshot(s) below."}
+    ]
+    for s in screenshots:
+        content.append({"type": "image_url", "image_url": {"url": f"data:{s['mime']};base64,{s['b64']}"}})
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": TIMESTAMP_EXTRACTION_PROMPT},
+                        {"role": "user", "content": content},
+                    ],
+                    "max_tokens": 8192,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"]
+            segs = _extract_json(raw).get("segments", [])
+
+            # Sort by start time
+            def _seg_start_secs(s):
+                parts = s.get("start", "00:00:00").strip().split(":")
+                if len(parts) == 3:
+                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                elif len(parts) == 2:
+                    return int(parts[0]) * 60 + float(parts[1])
+                return float(parts[0])
+
+            segs.sort(key=_seg_start_secs)
+
+            # Deduplicate: drop any segment whose start time is within 0.5 seconds
+            # of a previous segment's start (LLM sometimes extracts the same
+            # region twice across adjacent screenshots).
+            # 0.5s is tight enough to catch true duplicates but won't discard
+            # legitimate adjacent segments that are only 1-2s apart.
+            deduped = []
+            for seg in segs:
+                t = _seg_start_secs(seg)
+                if not deduped or abs(t - _seg_start_secs(deduped[-1])) > 0.5:
+                    deduped.append(seg)
+
+            # Re-number ids sequentially
+            for i, seg in enumerate(deduped, 1):
+                seg["id"] = i
+
+            # Warn about gaps > 5 seconds between consecutive segments —
+            # these likely mean a segment was missed in extraction.
+            for i in range(len(deduped) - 1):
+                end_t   = _seg_start_secs({"start": deduped[i].get("end",   deduped[i].get("start", "00:00:00"))})
+                start_t = _seg_start_secs(deduped[i + 1])
+                gap = start_t - end_t
+                if gap > 5:
+                    emit("warning", message=(
+                        f"Gap of {gap:.0f}s detected between segment {deduped[i]['id']} "
+                        f"({deduped[i].get('end','?')}) and segment {deduped[i+1]['id']} "
+                        f"({deduped[i+1].get('start','?')}) — a segment may have been missed in extraction."
+                    ))
+
+            return deduped
+        except requests.exceptions.HTTPError as exc:
+            if exc.response.status_code == 429 and attempt < max_retries - 1:
+                time.sleep(30 * (attempt + 1))
+                continue
+            raise
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(2 ** (attempt + 1))
+    return []
+
+
+def _call_label_batch_request(content: list, api_key: str, model: str,
+                               base_url: str) -> tuple[list, int, float]:
+    """Make one streaming LLM call for segment labeling. Returns (segments, tokens, cost)."""
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": LABELING_SYSTEM_PROMPT},
+            {"role": "user", "content": content},
+        ],
+        "max_tokens": 1024,
+        "stream": True,
+    }
+    raw_text = ""
+    tokens_used = 0
+    generation_id = ""
+    last_emit = 0
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=300,
+                stream=True,
+            )
+            resp.raise_for_status()
+            raw_text = ""
+            tokens_used = 0
+            generation_id = ""
+            last_emit = 0
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    if not generation_id:
+                        generation_id = chunk.get("id", "")
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        raw_text += delta
+                        if len(raw_text) - last_emit >= 40:
+                            emit("stream_chars", chars=len(raw_text))
+                            last_emit = len(raw_text)
+                    usage = chunk.get("usage") or {}
+                    if usage.get("total_tokens"):
+                        tokens_used = usage["total_tokens"]
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+            break
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code
+            if status == 429 and attempt < max_retries - 1:
+                emit("stream_chars", chars=0)
+                time.sleep(30 * (attempt + 1))
+                continue
+            if status == 402:
+                try:
+                    detail = exc.response.json().get("error", {}).get("message", "")
+                except Exception:
+                    detail = ""
+                raise RuntimeError(f"Token exhaustion: OpenRouter account has insufficient credits. {detail}".strip())
+            raise
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
+            if attempt == max_retries - 1:
+                raise
+            emit("stream_chars", chars=0)
+            time.sleep(2 ** (attempt + 1))
+    cost_usd = fetch_generation_cost(generation_id, api_key, base_url) if generation_id else 0.0
+    return _extract_json(raw_text).get("segments", []), tokens_used, cost_usd
+
+
+def _decode_frame(b64_str: str):
+    """Decode a base64 JPEG string to a BGR numpy array."""
+    buf = np.frombuffer(base64.b64decode(b64_str), dtype=np.uint8)
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+
+
+def _classify_optical_flow(prev_gray, curr_gray) -> tuple[str, float, str, float, float, float, float, float]:
+    """
+    Compute dense optical flow between two greyscale frames.
+    Returns (motion_type, avg_magnitude, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy).
+    motion_type: static | rotation-cw | rotation-ccw |
+                 upward | downward | lateral-left | lateral-right | complex
+    activity_zone: which horizontal third of the frame has most motion
+    mean_fx/fy: mean flow vector components for all active points
+    rot_score: signed rotational cross-product score
+    left_fy/right_fy: mean vertical flow in the left and right thirds of the frame
+                      (used for zone-specific pick-up / hold detection)
+    """
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_gray, curr_gray, None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+    )
+    h, w = flow.shape[:2]
+    mag_map = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2)
+
+    # Activity zone: which third of the frame is most active
+    zone_l = float(np.mean(mag_map[:, : w // 3]))
+    zone_c = float(np.mean(mag_map[:, w // 3 : 2 * w // 3]))
+    zone_r = float(np.mean(mag_map[:, 2 * w // 3 :]))
+    max_zone = max(zone_l, zone_c, zone_r)
+    if max_zone < 0.5:
+        activity_zone = "minimal"
+    elif max(zone_l, zone_r) < zone_c * 1.5:
+        activity_zone = "spread across frame"
+    elif zone_l > zone_r and zone_l > zone_c:
+        activity_zone = "left side of frame"
+    elif zone_r > zone_l and zone_r > zone_c:
+        activity_zone = "right side of frame"
+    else:
+        activity_zone = "center of frame"
+
+    # Motion type from sampled flow vectors
+    step = 20
+    yy, xx = np.mgrid[step // 2 : h : step, step // 2 : w : step]
+    fx = flow[yy, xx, 0]
+    fy = flow[yy, xx, 1]
+    mag = np.sqrt(fx ** 2 + fy ** 2)
+    active = mag > 1.5
+    if active.sum() < 8:
+        return "static", float(np.mean(mag)), activity_zone, 0.0, 0.0, 0.0, 0.0, 0.0
+
+    fx_a = fx[active]
+    fy_a = fy[active]
+    mag_a = mag[active]
+    avg_mag = float(np.mean(mag_a))
+
+    cx = (xx[active] - w / 2) / (w / 2)
+    cy = (yy[active] - h / 2) / (h / 2)
+    cross = cx * fy_a - cy * fx_a
+    rot_score = float(np.mean(cross))
+
+    mean_fx = float(np.mean(fx_a))
+    mean_fy = float(np.mean(fy_a))
+
+    # Zone-specific vertical flow: tells us which hand is doing the lifting/placing
+    left_mask  = active & (xx < w // 3)
+    right_mask = active & (xx > 2 * w // 3)
+    left_fy  = float(np.mean(fy[left_mask]))  if left_mask.sum()  >= 3 else 0.0
+    right_fy = float(np.mean(fy[right_mask])) if right_mask.sum() >= 3 else 0.0
+
+    net_displacement = float(np.sqrt(mean_fx ** 2 + mean_fy ** 2))
+
+    # Net vertical/lateral movement takes priority over rotation.
+    # Pick-up/place arcs produce a rotation-like cross product — suppress that
+    # by requiring that rotation only wins when net displacement is small
+    # (object spinning in place, not travelling through space).
+    if mean_fy < -2.5 and abs(mean_fy) > abs(rot_score) * 2:
+        return "upward", avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+    if mean_fy > 2.5 and abs(mean_fy) > abs(rot_score) * 2:
+        return "downward", avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+    if abs(rot_score) > 0.35 and net_displacement < avg_mag * 0.6:
+        return ("rotation-cw" if rot_score < 0 else "rotation-ccw"), avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+    if mean_fy < -1.5:
+        return "upward", avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+    if mean_fy > 1.5:
+        return "downward", avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+    if abs(mean_fx) > 2.5:
+        return ("lateral-left" if mean_fx < 0 else "lateral-right"), avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+    return "complex", avg_mag, activity_zone, mean_fx, mean_fy, rot_score, left_fy, right_fy
+
+
+def _build_motion_summary(seg_frames: list[dict]) -> str:
+    """
+    Run optical flow analysis on the segment's frames and return
+    a structured text block to prepend to the LLM prompt.
+
+    Two layers of analysis:
+    1. Per-pair events (what happened between each consecutive frame pair)
+    2. Segment-level trajectory + velocity profile (what the whole segment shows)
+    """
+    if len(seg_frames) < 2:
+        return ""
+
+    # Collect raw per-pair data
+    flow_events = []  # (frame_idx, motion_type, avg_mag, zone)
+    raw_vectors = []  # (mean_fx, mean_fy, rot_score, avg_mag, left_fy, right_fy)
+    zones = []
+    prev_gray = None
+
+    for i, f in enumerate(seg_frames):
+        bgr = _decode_frame(f["b64"])
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        if prev_gray is not None:
+            motion, mag, zone, mean_fx, mean_fy, rot_score, left_fy, right_fy = _classify_optical_flow(prev_gray, gray)
+            if motion != "static":
+                flow_events.append((i, motion, mag, zone))
+                raw_vectors.append((mean_fx, mean_fy, rot_score, mag, left_fy, right_fy))
+                if zone not in ("minimal", "spread across frame"):
+                    zones.append(zone)
+        prev_gray = gray
+
+    if not flow_events:
+        return ""
+
+    lines = [
+        "LOCAL MOTION ANALYSIS (supplementary context — do not override a human label based on this alone):",
+        "EGOCENTRIC CONVENTION: right hand → appears on RIGHT side of frame | left hand → appears on LEFT side of frame",
+    ]
+
+    # ── Segment-level trajectory analysis ────────────────────────────────────
+    if raw_vectors:
+        all_fx      = [v[0] for v in raw_vectors]
+        all_fy      = [v[1] for v in raw_vectors]
+        all_rot     = [v[2] for v in raw_vectors]
+        all_mags    = [v[3] for v in raw_vectors]
+        all_left_fy = [v[4] for v in raw_vectors]
+        all_right_fy= [v[5] for v in raw_vectors]
+        n = len(raw_vectors)
+
+        # Cumulative displacement — where did all motion add up to?
+        cum_fx = sum(all_fx)
+        cum_fy = sum(all_fy)
+        cum_mag = (cum_fx ** 2 + cum_fy ** 2) ** 0.5
+
+        # Zone-specific cumulative vertical displacement
+        # Positive = downward, Negative = upward (screen coords)
+        cum_left_fy  = sum(all_left_fy)
+        cum_right_fy = sum(all_right_fy)
+
+        # Path length — total distance travelled
+        path_length = sum(all_mags)
+
+        # Directness ratio — 1.0 = straight line, ~0 = circular/random
+        directness = (cum_mag / path_length) if path_length > 0 else 0.0
+
+        # Velocity profile — compare first-half vs second-half mean magnitude
+        first_half  = all_mags[: max(1, n // 2)]
+        second_half = all_mags[max(1, n // 2) :]
+        avg_first  = sum(first_half)  / len(first_half)
+        avg_second = sum(second_half) / len(second_half)
+        vel_ratio = (avg_second / avg_first) if avg_first > 0 else 1.0
+        if vel_ratio > 1.35:
+            vel_trend = "accelerating (motion intensified toward end)"
+        elif vel_ratio < 0.70:
+            vel_trend = "decelerating (motion slowed toward end)"
+        else:
+            vel_trend = "steady speed throughout"
+
+        # Rotational consistency — fraction of pairs with same-sign rot_score
+        rot_same_sign = sum(1 for r in all_rot if r * all_rot[0] > 0) / n if n > 0 else 0
+        rot_consistent = rot_same_sign > 0.65 and all(abs(r) > 0.2 for r in all_rot)
+
+        traj_lines = []
+
+        # ── Zone-specific hand activity ───────────────────────────────────────
+        # Reports what each hand (left/right zone) is doing independently.
+        # Key for distinguishing "picking up with right hand while left hand holds".
+        LIFT_THRESH = -2.0   # cumulative fy strongly upward
+        PLACE_THRESH = 2.0   # cumulative fy strongly downward
+        STATIC_THRESH = 1.0  # near-zero = holding / not moving vertically
+
+        def _zone_verdict(cum_fy_zone: float) -> str:
+            if cum_fy_zone < -PLACE_THRESH:
+                return f"net UPWARD (cum={cum_fy_zone:.1f}) — lifting / pick up"
+            elif cum_fy_zone > PLACE_THRESH:
+                return f"net DOWNWARD (cum={cum_fy_zone:.1f}) — placing / lowering"
+            elif abs(cum_fy_zone) <= STATIC_THRESH:
+                return f"near-static (cum={cum_fy_zone:.1f}) — holding or minimal motion"
+            else:
+                return f"mixed vertical (cum={cum_fy_zone:.1f})"
+
+        # Count per-zone upward events (each frame pair where that zone's fy < threshold)
+        # Repeated upward events in one zone = that hand is repeatedly lifting from a surface
+        right_up_count = sum(1 for fy in all_right_fy if fy < -1.2)
+        left_up_count  = sum(1 for fy in all_left_fy  if fy < -1.2)
+
+        right_verdict = _zone_verdict(cum_right_fy)
+        left_verdict  = _zone_verdict(cum_left_fy)
+        traj_lines.append(
+            f"  RIGHT ZONE (right hand): {right_verdict}"
+            + (f", upward events: {right_up_count}/{n}" if right_up_count > 0 else "")
+        )
+        traj_lines.append(
+            f"  LEFT ZONE  (left hand):  {left_verdict}"
+            + (f", upward events: {left_up_count}/{n}" if left_up_count > 0 else "")
+        )
+
+        # Flag the clearest hand-attribution case directly
+        right_up     = cum_right_fy < LIFT_THRESH
+        left_up      = cum_left_fy  < LIFT_THRESH
+        right_down   = cum_right_fy > PLACE_THRESH
+        left_down    = cum_left_fy  > PLACE_THRESH
+        right_static = abs(cum_right_fy) <= STATIC_THRESH
+        left_static  = abs(cum_left_fy)  <= STATIC_THRESH
+
+        # Repeated pick-up pattern: one zone has significantly more upward events than the other.
+        # We use a 2× dominance ratio rather than requiring the other side to be zero,
+        # because the picking hand often crosses into the opposite zone during the pass phase,
+        # creating spurious upward events there.
+        right_dominant = right_up_count >= 2 and right_up_count > left_up_count * 2
+        left_dominant  = left_up_count  >= 2 and left_up_count  > right_up_count * 2
+
+        if right_dominant:
+            traj_lines.append(
+                f"  ★ RIGHT zone has {right_up_count} upward events vs LEFT zone {left_up_count} — "
+                "RIGHT HAND is the primary picker (lifts from surface). "
+                "LEFT hand is holding/accumulating — NOT performing pick-up."
+            )
+        elif left_dominant:
+            traj_lines.append(
+                f"  ★ LEFT zone has {left_up_count} upward events vs RIGHT zone {right_up_count} — "
+                "LEFT HAND is the primary picker (lifts from surface). "
+                "RIGHT hand is holding/accumulating — NOT performing pick-up."
+            )
+        elif right_up and left_static:
+            traj_lines.append(
+                "  ★ RIGHT hand is lifting; LEFT hand is static/holding — "
+                "hand doing pick-up is RIGHT HAND"
+            )
+        elif left_up and right_static:
+            traj_lines.append(
+                "  ★ LEFT hand is lifting; RIGHT hand is static/holding — "
+                "hand doing pick-up is LEFT HAND"
+            )
+        elif right_up and left_up:
+            traj_lines.append("  ★ Both zones show upward motion — both hands picking up / lifting together")
+        elif right_down and left_static:
+            traj_lines.append(
+                "  ★ RIGHT hand is placing/lowering; LEFT hand is static/holding — "
+                "hand doing place is RIGHT HAND"
+            )
+        elif left_down and right_static:
+            traj_lines.append(
+                "  ★ LEFT hand is placing/lowering; RIGHT hand is static/holding — "
+                "hand doing place is LEFT HAND"
+            )
+
+        traj_lines.append("")
+
+        # ── Overall trajectory ────────────────────────────────────────────────
+        if cum_fy < -3.0 and directness > 0.45:
+            confidence = "high" if directness > 0.65 else "moderate"
+            traj_lines.append(
+                f"  TRAJECTORY: net upward displacement (cum_fy={cum_fy:.1f}), "
+                f"directness={directness:.2f} — {confidence}-confidence PICK UP"
+            )
+        elif cum_fy > 3.0 and directness > 0.45:
+            confidence = "high" if directness > 0.65 else "moderate"
+            traj_lines.append(
+                f"  TRAJECTORY: net downward displacement (cum_fy={cum_fy:.1f}), "
+                f"directness={directness:.2f} — {confidence}-confidence PLACE"
+            )
+        elif abs(cum_fx) > 4.0 and abs(cum_fy) < abs(cum_fx) * 0.5 and directness > 0.40:
+            direction = "left" if cum_fx < 0 else "right"
+            traj_lines.append(
+                f"  TRAJECTORY: net lateral displacement to the {direction} "
+                f"(cum_fx={cum_fx:.1f}), directness={directness:.2f} — possible SMOOTHEN or PASS"
+            )
+        elif rot_consistent and directness < 0.35:
+            rot_dir = "clockwise" if all_rot[0] < 0 else "counter-clockwise"
+            traj_lines.append(
+                f"  TRAJECTORY: low directness ({directness:.2f}) with consistent {rot_dir} "
+                f"rotation across {int(rot_same_sign * n)}/{n} frame pairs — ROTATE"
+            )
+        else:
+            traj_lines.append(
+                f"  TRAJECTORY: mixed/complex motion — directness={directness:.2f}, "
+                f"cum_fy={cum_fy:.1f}, cum_fx={cum_fx:.1f}"
+            )
+
+        traj_lines.append(f"  VELOCITY PROFILE: {vel_trend} (speed ratio end/start={vel_ratio:.2f})")
+
+        if vel_ratio < 0.70 and cum_fy > 2.0:
+            traj_lines.append("  → Downward + decelerating: high-confidence PLACE (contact deceleration)")
+        if vel_ratio > 1.35 and cum_fy < -2.0:
+            traj_lines.append("  → Upward + accelerating: high-confidence PICK UP (lifting acceleration)")
+        if vel_ratio > 1.20 and abs(cum_fx) > 3.0 and abs(cum_fy) < 2.0:
+            traj_lines.append("  → Lateral + accelerating: consistent SMOOTHEN or PUSH motion")
+
+        lines.extend(traj_lines)
+        lines.append("")  # blank separator before per-pair detail
+
+    # ── Per-pair event detail ─────────────────────────────────────────────────
+    hints = {
+        "rotation-cw":   "→ rotating clockwise",
+        "rotation-ccw":  "→ rotating counter-clockwise",
+        "upward":        "→ upward lift",
+        "downward":      "→ downward movement",
+        "lateral-left":  "→ moving left",
+        "lateral-right": "→ moving right",
+        "complex":       "→ multi-directional",
+    }
+    for frame_num, motion, mag, zone in flow_events:
+        strength = "strong" if mag > 5 else "moderate" if mag > 2.5 else "subtle"
+        hint = hints.get(motion, "")
+        zone_note = f", {zone}" if zone not in ("minimal", "spread across frame") else ""
+        lines.append(f"  Frames {frame_num}→{frame_num + 1}: {strength} {motion}{zone_note} {hint}")
+
+    # ── Zone transitions → hand transfer events ───────────────────────────────
+    if len(zones) >= 2:
+        seq = []
+        for z in zones:
+            if not seq or z != seq[-1]:
+                seq.append(z)
+        for i in range(len(seq) - 1):
+            a, b = seq[i], seq[i + 1]
+            if a == "right side of frame" and b == "left side of frame":
+                lines.append("  Zone transition RIGHT→LEFT: likely pass from right hand to left hand")
+            elif a == "left side of frame" and b == "right side of frame":
+                lines.append("  Zone transition LEFT→RIGHT: likely pass from left hand to right hand")
+
+    # ── Dominant activity zone ────────────────────────────────────────────────
+    if zones:
+        from collections import Counter
+        dominant = Counter(zones).most_common(1)[0][0]
+        lines.append(f"  Primary activity zone: {dominant}")
+
+    return "\n".join(lines)
+
+
+FRAMES_PER_SEG = 8  # frames sampled per segment in pass 2
+
+
+def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context: str,
+                            api_key: str, model: str, base_url: str) -> tuple[list, int, float]:
+    """Pass 2: label each pre-defined segment with its own API call (3-5 frames each)."""
+
+    def hms_to_seconds(hms: str) -> float:
+        parts = hms.strip().split(":")
+        if len(parts) == 3:
+            h, m, s = parts
+            return int(h) * 3600 + int(m) * 60 + float(s)
+        elif len(parts) == 2:
+            m, s = parts
+            return int(m) * 60 + float(s)
+        else:
+            return float(parts[0])
+
+    video_name_hint = f"Context: {context}" if context else ""
+
+    def sample_frames_for_seg(seg: dict) -> list:
+        start_s = hms_to_seconds(seg["start"])
+        end_s = hms_to_seconds(seg["end"])
+        sf = [f for f in frames if start_s <= f["timestamp"] <= end_s]
+        if not sf:
+            mid = (start_s + end_s) / 2
+            return [min(frames, key=lambda f: abs(f["timestamp"] - mid))]
+        if len(sf) <= FRAMES_PER_SEG:
+            return sf
+        # Evenly sample FRAMES_PER_SEG indices across the segment
+        n = len(sf)
+        indices = {round(i * (n - 1) / (FRAMES_PER_SEG - 1)) for i in range(FRAMES_PER_SEG)}
+        return [sf[i] for i in sorted(indices)]
+
+    n_segs = len(timestamp_segments)
+    emit("annotating", frame_count=len(frames), chunks_total=n_segs)
+
+    total_tokens = 0
+    total_cost = 0.0
+    label_map: dict[int, str] = {}
+    accumulated: list[dict] = []
+
+    for seg_idx, seg in enumerate(timestamp_segments):
+        seg_frames = sample_frames_for_seg(seg)
+        seg_id = seg.get("id", seg_idx + 1)
+
+        # Run local analysis — fast, runs before the LLM call
+        motion_summary = _build_motion_summary(seg_frames)
+
+        motion_cues = (
+            "HAND CONVENTION (egocentric video): the ego's RIGHT hand appears on the RIGHT side of the frame; "
+            "LEFT hand appears on the LEFT side. Use the activity zone in the motion analysis to assign the correct hand.\n"
+            "Object transfer between hands → use: pass, hand over, put, switch, set (NOT: transfer, give, handover)\n\n"
+            "TEMPORAL ANALYSIS — compare Frame 1 to the last frame:\n"
+            "  • Did the fabric/object orientation rotate in-plane? → 'rotate [object]'\n"
+            "  • Did the fabric flip over (reverse side now faces up)? → 'flip [object]'\n"
+            "  • Did an object leave a surface? → 'pick up [object]'\n"
+            "  • Did an object land on a surface? → 'place [object]'\n"
+            "  • Did activity zone shift from one side to the other? → 'pass [object] to [hand]'\n"
+            "  • Are hands pressing flat along fabric? → 'smoothen [object]'\n"
+            "  • Are hands bringing fabric edges together? → 'fold [object]'\n\n"
+        )
+        generate_add_hint = "If a motion is clearly visible but NOT in the label, add it.\n\n"
+        existing_label = seg.get("label", "").strip()
+        local_analysis = (f"\n{motion_summary}\n\n") if motion_summary else ""
+        if existing_label:
+            task_text = (
+                f"The annotator labeled this segment as:\n"
+                f'  "{existing_label}"\n\n'
+                f"Review the {len(seg_frames)} video frames for Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}"
+                f"{local_analysis}"
+                f"{motion_cues}"
+                "YOUR ROLE: Quality-assure the annotator's label. The annotator watched the full video — trust their action words.\n\n"
+                "━━━ GOLDEN RULE — Action verbs are the authority ━━━\n"
+                "The annotator's ACTION VERBS (pick up, rotate, fold, flip, place, smoothen, etc.) ARE CORRECT.\n"
+                "Do NOT replace or remove any action verb the annotator wrote based on optical flow or visual ambiguity.\n"
+                "Your output must preserve all of the annotator's core action verbs.\n\n"
+                "━━━ EXCEPTION — Physically incompatible verbs ━━━\n"
+                "You MAY replace an annotated verb ONLY when all three conditions hold:\n"
+                "  1. The TRAJECTORY block shows HIGH-confidence evidence (directness > 0.65) for a different action\n"
+                "  2. The annotated verb is PHYSICALLY INCOMPATIBLE with that trajectory — meaning the two actions\n"
+                "     cannot co-occur in the same time window. Use these incompatibility rules:\n"
+                "       • 'rotate' or 'flip' → object stays in-plane; incompatible with net vertical travel\n"
+                "         – TRAJECTORY shows high-confidence PLACE  → replace 'rotate'/'flip' with 'place'\n"
+                "         – TRAJECTORY shows high-confidence PICK UP → replace 'rotate'/'flip' with 'pick up'\n"
+                "       • 'place' → object moves downward to surface; incompatible with sustained upward motion\n"
+                "         – TRAJECTORY shows high-confidence PICK UP → replace 'place' with 'pick up'\n"
+                "       • 'pick up' → object leaves surface; incompatible with sustained downward motion\n"
+                "         – TRAJECTORY shows high-confidence PLACE   → replace 'pick up' with 'place'\n"
+                "  3. The VELOCITY PROFILE is consistent with the replacement (decelerating → place; accelerating → pick up)\n"
+                "If any condition is not met, keep the annotator's verb.\n\n"
+                "━━━ RULE 1 — Correct wrong hand specifications ━━━\n"
+                "Hand specifications (left hand / right hand / both hands) CAN be corrected.\n"
+                "Use the ★ zone verdict lines in the motion analysis:\n\n"
+                "CRITICAL — 'pick up' means taking an object FROM A SURFACE (table, shelf, floor).\n"
+                "A hand that is RECEIVING or HOLDING objects passed from the other hand is NOT picking up.\n"
+                "  • '★ RIGHT zone has N upward events; LEFT zone has none' → ONLY the right hand picks up.\n"
+                "    The left hand is holding/accumulating. Remove any 'pick up with left hand' label.\n"
+                "  • '★ LEFT zone has N upward events; RIGHT zone has none' → ONLY the left hand picks up.\n"
+                "    The right hand is holding/accumulating. Remove any 'pick up with right hand' label.\n"
+                "  • '★ RIGHT hand is lifting; LEFT hand is static/holding' → correct hand to RIGHT HAND\n"
+                "  • '★ LEFT hand is lifting; RIGHT hand is static/holding' → correct hand to LEFT HAND\n"
+                "  • 'near-static' in a zone = that hand is holding, not picking up\n\n"
+                "When one hand repeatedly picks up and passes objects to the other hand:\n"
+                "  → Label: 'pick up [object] with [active hand]' only.\n"
+                "  → Do NOT add a second 'pick up' for the receiving/holding hand.\n\n"
+                "SPECIAL CASE — Two 'pick up' labels in the same segment:\n"
+                "If the annotator wrote 'pick up with [hand A]' AND 'pick up with [hand B]' in the same segment,\n"
+                "this almost always means one hand is the picker and the other is the accumulator/holder.\n"
+                "  • Check the ★ line: whichever zone has more upward events is the picking hand.\n"
+                "  • Remove the 'pick up' for the hand with fewer upward events.\n"
+                "  • If the motion analysis is ambiguous, default to keeping only 'pick up with right hand'\n"
+                "    (in egocentric video the dominant hand is typically the right hand).\n\n"
+                "━━━ RULE 2 — Only add a missing action if evidence is overwhelming ━━━\n"
+                "You may add ONE extra action ONLY when ALL of the following are true:\n"
+                "  a) The action is completely absent from the annotator's label (not implied by existing words)\n"
+                "  b) The local motion analysis shows clear, unambiguous evidence for it across the majority of frame pairs\n"
+                "  c) The new action is a different event, not a different interpretation of an existing one\n"
+                "  d) Total actions after adding ≤ 3\n"
+                "If uncertain, DO NOT add it. When in doubt, keep the annotator's label as-is.\n\n"
+                "━━━ RULE 3 — Fix guideline violations (language only) ━━━\n"
+                "  - Forbidden word used: adjust, manipulate, move, transfer, inspect, check, examine, reach, pick (alone), take, grasp, handover, give\n"
+                "  - Verb is in -ing form → use base form (smoothening → smoothen, folding → fold)\n"
+                "  - Hand specification entirely absent and it would add meaningful information → add it; don't force it awkwardly per-action\n"
+                "  - Articles present (the/a/an) → remove them\n"
+                "  - Multiple actions joined with 'and' → replace with ', ' (comma)\n"
+                "  - Label exceeds 20 words → shorten\n\n"
+                f"Return ONLY valid JSON with exactly 1 segment:\n"
+                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<corrected label>"}}]}}'
+            )
+        else:
+            task_text = (
+                f"Label this segment — Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}"
+                f"{local_analysis}"
+                f"Study the {len(seg_frames)} frames as a sequence.\n"
+                f"{motion_cues}"
+                f"{generate_add_hint}"
+                "DENSE labeling: this segment may contain 2–3 distinct atomic actions. Do NOT collapse into one generic verb.\n"
+                "Separate multiple actions with ', ' (comma) — never use 'and' between actions.\n"
+                "Do NOT default to 'fold towel' when uncertain — if the orientation changed but you cannot tell how, use 'rotate' or 'flip' based on the cues above.\n\n"
+                f"Return ONLY valid JSON with exactly 1 segment:\n"
+                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<label with hand specification>"}}]}}'
+            )
+
+        content = [{"type": "text", "text": task_text}]
+        for f in seg_frames:
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
+
+        output_segs, tokens, cost = _call_label_batch_request(content, api_key, model, base_url)
+        total_tokens += tokens
+        total_cost += cost
+
+        raw_label = output_segs[0].get("label", "no action") if output_segs else "no action"
+        label, warnings = _sanitize_label(raw_label)
+        for w in warnings:
+            emit("log", message=f"Segment {seg_id} ({seg['start']}→{seg['end']}): {w}")
+        label_map[seg_idx] = label
+
+        accumulated.append({"id": seg_idx + 1, "start": seg["start"], "end": seg["end"], "label": label})
+        emit("partial_segments", segments=list(accumulated))
+        emit("annotating_progress", chunks_done=seg_idx + 1, chunks_total=n_segs, from_cache=False)
+
+    merged = [
+        {"id": i + 1, "start": ts["start"], "end": ts["end"], "label": label_map.get(i, "no action")}
+        for i, ts in enumerate(timestamp_segments)
+    ]
+    return merged, total_tokens, total_cost
+
 
 def _call_llm_single(frames: list[dict], context: str, api_key: str, model: str,
-                     base_url: str, screenshots: list = []) -> tuple[list, int, float]:
+                     base_url: str) -> tuple[list, int, float]:
     """Send one batch of frames to the LLM and return (segments, tokens, cost_usd)."""
     video_name_hint = f"Context: {context}" if context else ""
-    content = []
-
-    if screenshots:
-        content.append({
-            "type": "text",
-            "text": (
-                f"{len(screenshots)} reference screenshot(s) from a professional annotation tool (e.g. ELAN) are provided below. "
-                "Each screenshot shows an existing segmentation timeline with segment numbers, exact timestamps (start → end), and labels.\n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. Extract the exact segment timestamps (start and end times) from these screenshots.\n"
-                "2. Use THOSE timestamps as your segment boundaries — do NOT create your own segmentation.\n"
-                "3. Your output must have the same number of segments shown in the screenshots, with the exact same start and end times.\n"
-                "4. Only generate the action labels for each predefined segment based on what you observe in the video frames."
-            ),
-        })
-        for s in screenshots:
-            content.append({"type": "image_url", "image_url": {"url": f"data:{s['mime']};base64,{s['b64']}"}})
-        content.append({
-            "type": "text",
-            "text": (
-                f"Now here are the {len(frames)} video frames to label. {video_name_hint}\n"
-                "Use the segment timestamps from the screenshots above and label each segment. "
-                "Return only valid JSON matching the format in your instructions."
-            ),
-        })
-    else:
-        start_ts = frames[0]["time_str"] if frames else "00:00:00"
-        end_ts = frames[-1]["time_str"] if frames else "00:00:00"
-        content.append({
+    start_ts = frames[0]["time_str"] if frames else "00:00:00"
+    end_ts = frames[-1]["time_str"] if frames else "00:00:00"
+    content = [
+        {
             "type": "text",
             "text": (
                 f"Annotate ALL actions in this video segment ({len(frames)} frames, {start_ts} to {end_ts}). "
                 f"{video_name_hint}\n"
                 "Return only valid JSON matching the format in your instructions."
             ),
-        })
+        }
+    ]
 
     for f in frames:
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
@@ -338,7 +1191,7 @@ def _call_llm_single(frames: list[dict], context: str, api_key: str, model: str,
             {"role": "system", "content": ANNOTATION_SYSTEM_PROMPT},
             {"role": "user", "content": content},
         ],
-        "max_tokens": 32768,
+        "max_tokens": 1024,
     }
 
     payload["stream"] = True
@@ -410,20 +1263,27 @@ def _call_llm_single(frames: list[dict], context: str, api_key: str, model: str,
 
     cost_usd = fetch_generation_cost(generation_id, api_key, base_url) if generation_id else 0.0
 
-    json_match = re.search(r"\{[\s\S]*\}", raw_text)
-    if not json_match:
-        raise RuntimeError("LLM did not return valid JSON")
-    segments = json.loads(json_match.group()).get("segments", [])
+    segments = _extract_json(raw_text).get("segments", [])
     return segments, tokens_used, cost_usd
 
 
 def call_llm(frames: list[dict], context: str, api_key: str, model: str,
              base_url: str, screenshots: list = [], video_path: str = "",
              fps: float = 1.0) -> tuple[list, int, float]:
-    # Screenshots mode or small jobs: single call (no chunking)
-    if screenshots or len(frames) <= CHUNK_SIZE:
+    if screenshots:
+        # Pass 1: extract timestamps from screenshots (shown as indeterminate in UI)
         emit("annotating", frame_count=len(frames), chunks_total=1)
-        return _call_llm_single(frames, context, api_key, model, base_url, screenshots)
+        timestamp_segments = _extract_timestamps(screenshots, api_key, model, base_url)
+        if not timestamp_segments:
+            raise RuntimeError("Could not extract any timestamps from the reference screenshots")
+        # Pass 2: _label_with_timestamps emits its own annotating event + per-segment progress
+        segments, tokens, cost = _label_with_timestamps(frames, timestamp_segments, context, api_key, model, base_url)
+        return segments, tokens, cost
+
+    # Small jobs: single call (no chunking)
+    if len(frames) <= CHUNK_SIZE:
+        emit("annotating", frame_count=len(frames), chunks_total=1)
+        return _call_llm_single(frames, context, api_key, model, base_url)
 
     # Large jobs: split into parallel chunks for speed, with per-chunk caching for resume
     chunks = [frames[i:i + CHUNK_SIZE] for i in range(0, len(frames), CHUNK_SIZE)]
@@ -447,7 +1307,7 @@ def call_llm(frames: list[dict], context: str, api_key: str, model: str,
                      chunks_total=len(chunks), from_cache=True)
             return cached["segments"], cached["tokens"], cached["cost"]
 
-        segments, tokens, cost = _call_llm_single(chunk, context, api_key, model, base_url, [])
+        segments, tokens, cost = _call_llm_single(chunk, context, api_key, model, base_url)
         _save_chunk_cache(video_path, fps, chunk_idx, segments, tokens, cost)
         with chunk_lock:
             chunks_done[0] += 1
@@ -464,6 +1324,9 @@ def call_llm(frames: list[dict], context: str, api_key: str, model: str,
     for segments, tokens, cost in chunk_results:
         for seg in segments:
             seg["id"] = seg_id
+            seg["label"], warnings = _sanitize_label(seg.get("label", ""))
+            for w in warnings:
+                emit("log", message=f"Segment {seg_id}: {w}")
             all_segments.append(seg)
             seg_id += 1
         total_tokens += tokens

@@ -107,7 +107,9 @@ export default function History() {
                 {expanded === ann.id && ann.output_json?.segments && (
                   <div className="border-t border-gray-100 dark:border-gray-800 px-5 py-4 max-h-96 overflow-y-auto">
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-1.5">
-                      {ann.output_json.segments.map((seg) => (
+                      {[...ann.output_json.segments]
+                        .sort((a, b) => a.start.localeCompare(b.start))
+                        .map((seg) => (
                         <div key={seg.id} className="flex gap-3 text-xs min-w-0">
                           <span className="text-indigo-400 font-mono shrink-0 w-14">{seg.start}</span>
                           <span className="text-gray-400 font-mono shrink-0">→</span>
