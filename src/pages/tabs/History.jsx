@@ -69,8 +69,8 @@ function AnnotationHistory() {
     setLoading(true);
     try {
       const result = await listAnnotations(page * limit, limit);
-      setItems(result.items);
-      setTotal(result.total);
+      setItems(result?.items ?? []);
+      setTotal(result?.total ?? 0);
     } catch {}
     setLoading(false);
   }, [page]);
@@ -203,8 +203,8 @@ function LabelAssistHistory() {
     setLoading(true);
     try {
       const result = await listLabelAssist(page * limit, limit);
-      setItems(result.items);
-      setTotal(result.total);
+      setItems(result?.items ?? []);
+      setTotal(result?.total ?? 0);
     } catch {}
     setLoading(false);
   }, [page]);

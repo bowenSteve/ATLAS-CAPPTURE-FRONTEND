@@ -29,6 +29,7 @@ export default function App() {
   const { token, user, setUser, setBackendUrl, theme, logout } = useStore();
   const [tab, setTab] = useState("annotate");
   const [adminMode, setAdminMode] = useState(false);
+  const [configReady, setConfigReady] = useState(false);
 
   useEffect(() => {
     window.electron.getConfig().then(async (cfg) => {
@@ -44,6 +45,8 @@ export default function App() {
           logout();
         }
       }
+      // Only allow components to render (and fire API calls) once the base URL is set
+      setConfigReady(true);
     });
   }, []);
 
@@ -55,6 +58,11 @@ export default function App() {
   }, [theme]);
 
   if (!token) return <Auth />;
+  if (!configReady) return (
+    <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
+      <div className="w-8 h-8 rounded-full border-4 border-indigo-600 border-t-transparent animate-spin" />
+    </div>
+  );
 
   const tabs = adminMode ? ADMIN_TABS : USER_TABS;
   const activeTab = adminMode

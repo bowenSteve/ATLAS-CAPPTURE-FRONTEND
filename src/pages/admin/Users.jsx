@@ -13,8 +13,8 @@ export default function Users() {
     setLoading(true);
     try {
       const res = await adminListUsers(0, 50, search);
-      setUsers(res.items);
-      setTotal(res.total);
+      setUsers(res?.items ?? []);
+      setTotal(res?.total ?? 0);
     } catch {}
     setLoading(false);
   }, [search]);

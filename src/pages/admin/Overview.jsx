@@ -62,8 +62,8 @@ export default function Overview() {
     setAnnLoading(true);
     try {
       const result = await adminListAnnotations(annPage * ANN_LIMIT, ANN_LIMIT);
-      setAnnItems(result.items);
-      setAnnTotal(result.total);
+      setAnnItems(result?.items ?? []);
+      setAnnTotal(result?.total ?? 0);
     } catch {}
     setAnnLoading(false);
   }, [annPage]);
