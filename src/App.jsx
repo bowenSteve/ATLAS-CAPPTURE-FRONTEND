@@ -3,6 +3,7 @@ import { setBaseUrl, setAuthToken, getMe } from "./services/api";
 import useStore from "./store/useStore";
 import Auth from "./pages/Auth";
 import Annotate from "./pages/tabs/Annotate";
+import LabelAssist from "./pages/tabs/LabelAssist";
 import Dashboard from "./pages/tabs/Dashboard";
 import History from "./pages/tabs/History";
 import Settings from "./pages/tabs/Settings";
@@ -12,6 +13,7 @@ import AdminSettings from "./pages/admin/AdminSettings";
 
 const USER_TABS = [
   { id: "annotate", label: "Annotate", icon: VideoIcon },
+  { id: "label-assist", label: "Label Assist", icon: ChatIcon },
   { id: "dashboard", label: "Dashboard", icon: DashboardIcon },
   { id: "history", label: "History", icon: HistoryIcon },
   { id: "settings", label: "Settings", icon: SettingsIcon },
@@ -125,6 +127,7 @@ export default function App() {
         {/* Main content — all user tabs stay mounted to preserve annotation state */}
         <main className="flex-1 overflow-y-auto">
           <div className={!adminMode && activeTab === "annotate" ? "" : "hidden"}><Annotate /></div>
+          <div className={!adminMode && activeTab === "label-assist" ? "" : "hidden"}><LabelAssist /></div>
           <div className={!adminMode && activeTab === "dashboard" ? "" : "hidden"}><Dashboard /></div>
           <div className={!adminMode && activeTab === "history" ? "" : "hidden"}><History /></div>
           <div className={!adminMode && activeTab === "settings" ? "" : "hidden"}><Settings /></div>
@@ -158,6 +161,14 @@ function VideoIcon({ className }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
+    </svg>
+  );
+}
+function ChatIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
     </svg>
   );
 }

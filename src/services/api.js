@@ -72,6 +72,17 @@ export async function getAnnotation(id) {
   return data;
 }
 
+// ── Label Assist ─────────────────────────────────────────────────────────────
+export async function restructureLabel(context, description, videoName = "") {
+  const { data } = await axios.post(`${BASE}/api/label-assist/restructure`, { context, description, video_name: videoName }, auth());
+  return data; // { label, warnings, credits_remaining }
+}
+
+export async function listLabelAssist(skip = 0, limit = 20) {
+  const { data } = await axios.get(`${BASE}/api/label-assist/`, { ...auth(), params: { skip, limit } });
+  return data; // { total, items }
+}
+
 // ── Mpesa ─────────────────────────────────────────────────────────────────────
 export async function stkPush(mpesaPhone, amount) {
   const { data } = await axios.post(`${BASE}/api/mpesa/stkpush`, { mpesa_phone: mpesaPhone, amount }, auth());
