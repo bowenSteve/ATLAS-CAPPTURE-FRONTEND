@@ -73,13 +73,20 @@ LABEL FORMAT
    ✓ pick up spoon with right hand
    ✗ the spoon is picked with right hand
 
-2. HAND SPECIFICATION — include when it adds meaningful information. Specify per-action only when hands differ (e.g. "hold towel with left hand, fold with right hand"). When both hands do the same thing, one mention is enough (e.g. "fold and smoothen towel with both hands"). Use judgment — don't force it awkwardly.
+2. DUAL-HAND FORMAT — always label both hands separately, even when one hand is passive.
+   The non-dominant hand is almost always "hold [object] with [left/right] hand".
+   ✓ hold blue wire with left hand, cut wire with shears in right hand
+   ✓ hold sponge with left hand, pick up plate with right hand
+   ✓ hold cup with left hand, wipe cup with cloth in right hand
+   Only use "with both hands" when both hands perform identical, symmetrical actions:
+   ✓ twist wire with both hands   ✓ fold towel with both hands
+   NEVER collapse two separate hand actions into one generic "with both hands" label.
 
-3. 1-3 ATOMIC ACTIONS per segment, separated by comma or "and"
-   ✓ pick up cup with left hand, place cup on table with left hand
-   ✓ hold sponge with left hand and pick up plate with right hand
+3. 1-3 ATOMIC ACTIONS per segment, separated by comma
+   ✓ hold wire with left hand, pick up shears with right hand
+   ✓ hold cup with left hand, place cup on table with right hand
    ✗ pick up cup place cup on table with left hand  (missing separator)
-   ✗ pick up cup with left hand, place cup on table, and wipe surface with left hand  (too many — 3 atomic actions is the max)
+   ✗ hold X with left hand, do A with right hand, do B with right hand, do C  (too many — 3 atomic actions is the max)
 
 4. Under 20 words; all words must be true for the entire duration of the segment
 
@@ -103,9 +110,18 @@ NO ACTION: label "no action" only when hands touch nothing for more than 5 conse
 ━━━━━━━━━━━━━━━━━━━━━━━━
 VERB RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━
-Object leaves a surface → "pick up"  (never: pick, take, grasp)
-Object contacts a surface → "place [general location]"  (e.g. "place cup on table", not "place cup on upper-left of table")
+Object leaves a flat open surface → "pick up"  (never: pick, take)
+Object retrieved from a confined space (fridge shelf, cabinet, drawer, rack) → "grasp [item] from [location]"
+  ✓ grasp milk bottle from refrigerator with right hand
+  ✗ pick up milk bottle from refrigerator  (reserved for flat surfaces)
+Object carried across space (transport from one location to another) → "carry [item] from [A] to [B]"
+  ✓ carry milk bottle from refrigerator with both hands  (then "place" in same segment)
+Object contacts a surface → "place [object] on [destination]"  — destination = actual surface or object, not a vague region
+  ✓ place cup on table   ✓ place lid on container   ✗ place cup down
+Lid / cap removal → "pull [lid/cap] off [object]"  or  "remove [lid] from [object]"
+Lid / cap attachment → "press [lid] onto [object]"  or  "place [lid] on [object]"
 Object moved between locations → "reposition"
+Button / switch → "press [button/switch]"
 
 Instead of "adjust" → choose the most precise verb:
   shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
@@ -113,10 +129,18 @@ Instead of "adjust" → choose the most precise verb:
 Instead of "manipulate" → choose the most precise verb:
   grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
 
-Instead of "move" / "transfer" → use "pick up" and "place"
+Instead of "move" → "reposition" (within same location) or "carry" (between locations)
+Instead of "transfer" → use "pick up" and "place"
 
 Object exchanges between hands → use: hand over, put, pass, switch, set
   (NOT: transfer, handover, give)
+
+PARALLEL DUAL-HAND ACTIONS — when both hands do the same action simultaneously on DIFFERENT objects,
+list each hand separately; do NOT collapse to "with both hands":
+  ✓ pick up black bottle with right hand, pick up white bottle with left hand
+  ✗ pick up black and white bottles with both hands
+Use "with both hands" ONLY when both hands act on the SAME object together:
+  ✓ carry tray with both hands   ✓ press lid with both hands
 
 Do NOT invent steps that are not visible in the frames.
 
@@ -130,12 +154,14 @@ OBJECT NAMING
 - Use adjectives (color, pattern, size, state) only to disambiguate two or more similar objects — otherwise keep it simple
 - Multiple identical objects acted on at once: use collective plural ("pick up knives", not "pick up 3 knives")
 - Multiple different objects held simultaneously: list them ("hold pliers and hammer with right hand")
+- Placement destination = the actual surface or object receiving the item:
+  ✓ place container on green container  ✓ place bottle on table  ✗ place container down
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 FORBIDDEN WORDS — never use these
 ━━━━━━━━━━━━━━━━━━━━━━━━
 adjust, manipulate, move, transfer, inspect, check, examine, reach
-pick (alone), take, grasp
+pick (alone), take
 handover, give  (for object hand-off — use pass, put, hand over instead)
 it, them, they  (pronouns — always use the object name)
 -ing form of any verb  (use base form: "pick up" not "picking up", "fold" not "folding", "smoothen" not "smoothening")
@@ -196,11 +222,17 @@ LABEL FORMAT
    ✓ pick up spoon with right hand
    ✗ the spoon is picked with right hand
 
-2. HAND SPECIFICATION — include when it adds meaningful information. Specify per-action only when hands differ. When both hands do the same thing, one mention is enough. Use judgment — don't force it awkwardly.
+2. DUAL-HAND FORMAT — always label both hands separately, even when one hand is passive.
+   The non-dominant hand is almost always "hold [object] with [left/right] hand".
+   ✓ hold blue wire with left hand, cut wire with shears in right hand
+   ✓ hold sponge with left hand, pick up plate with right hand
+   Only use "with both hands" when both hands perform identical, symmetrical actions:
+   ✓ twist wire with both hands   ✓ fold towel with both hands
+   NEVER collapse two separate hand actions into a generic "with both hands" label.
 
-3. 1-3 ATOMIC ACTIONS per segment, separated by comma or "and"
-   ✓ pick up cup with left hand, place cup on table with left hand
-   ✓ hold sponge with left hand and pick up plate with right hand
+3. 1-3 ATOMIC ACTIONS per segment, separated by comma
+   ✓ hold wire with left hand, pick up shears with right hand
+   ✓ hold cup with left hand, place cup on table with right hand
 
 4. Under 20 words; all words must be true for the ENTIRE segment duration
 
@@ -211,13 +243,24 @@ LABEL FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━
 VERB RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━
-Object leaves surface → "pick up"  (never: pick, take, grasp)
-Object contacts surface → "place [location]"
-Object moved between locations → "reposition"
+Object leaves flat open surface → "pick up"  (never: pick, take)
+Object retrieved from confined space (fridge, cabinet, drawer) → "grasp [item] from [location]"
+  ✓ grasp bottle from refrigerator with right hand
+Object carried between locations → "carry [item] from [A]" + "place [item] on [B]" in same segment
+Object contacts surface/object → "place [item] on [destination]"  (destination = actual surface or object)
+  ✓ place lid on container   ✓ place cup on table   ✗ place cup down
+Lid removal → "pull [lid] off [object]"  |  Lid attachment → "press [lid] onto [object]"
+Button/switch → "press [button name]"
+Object moved within same area → "reposition"
+Object hand-off → hand over, put, pass, switch, set  (NOT: transfer, handover, give)
 
-Instead of "adjust" → use the most precise: shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
-Instead of "manipulate" → use the most precise: grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
-Object hand-off → use: hand over, put, pass, switch, set  (NOT: transfer, handover, give)
+PARALLEL DUAL-HAND: same action on different objects simultaneously → list each hand separately:
+  ✓ pick up black bottle with right hand, pick up white bottle with left hand
+  ✗ pick up black and white bottles with both hands
+"with both hands" ONLY when both hands act on the SAME object together.
+
+Instead of "adjust" → shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
+Instead of "manipulate" → grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
 
 NO ACTION: only when hands touch nothing AND ego is idle for the ENTIRE segment duration (more than 5s with no hand-object contact).
 
@@ -225,7 +268,7 @@ NO ACTION: only when hands touch nothing AND ego is idle for the ENTIRE segment 
 FORBIDDEN WORDS
 ━━━━━━━━━━━━━━━━━━━━━━━━
 adjust, manipulate, move, transfer, inspect, check, examine, reach
-pick (alone), take, grasp, handover, give
+pick (alone), take, handover, give
 it, them, they  (use the object name)
 -ing form of any verb  (fold not folding, smoothen not smoothening, pick up not picking up)
 the, a, an  (no articles)
@@ -258,16 +301,15 @@ _FORBIDDEN_WORD_MAP = {
     r"\bcheck\b": "verify",
     r"\bexamine\b": "look at",
     r"\breach\b": "extend hand toward",
-    r"\bgrasp\b": "grip",
     r"\btake\b": "pick up",
-    r"\b(pick|grasp|take)\s+(?!up\b)": "pick up ",
+    r"\b(pick|take)\s+(?!up\b)": "pick up ",
     r"\bthe\s+": "",
     r"\ba\s+(?=[a-z])": "",
     r"\ban\s+(?=[aeiou])": "",
 }
 
 # These warrant a flag to the UI rather than silent replacement
-_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give"}
+_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give", "move"}
 
 _VERB_ING_RE = re.compile(
     r"\b(pick(?:ing)?(?:\s+up)?|plac|fold|smooth(?:en)?|grip|hold|rotat|flip|tuck|flatten|align|loosen|tighten|push|pull|press|twist|squeez|pinch|assembl|apply)ing\b",
@@ -589,7 +631,7 @@ def _call_label_batch_request(content: list, api_key: str, model: str,
             {"role": "system", "content": LABELING_SYSTEM_PROMPT},
             {"role": "user", "content": content},
         ],
-        "max_tokens": 1024,
+        "max_tokens": 8192,
         "stream": True,
     }
     raw_text = ""
@@ -996,11 +1038,97 @@ def _build_motion_summary(seg_frames: list[dict]) -> str:
     return "\n".join(lines)
 
 
-FRAMES_PER_SEG = 8  # frames sampled per segment in pass 2
+TIER_MAX_FRAMES = {"basic": 6, "standard": 10, "premium": 14}
+
+CONSISTENCY_SYSTEM_PROMPT = """
+You are a quality controller for egocentric video action labels. You will receive a complete sequence of labeled segments. Your ONLY task is to fix inconsistencies — do NOT change labels that are already correct or rephrase them stylistically.
+
+Fix ONLY these issues:
+
+1. OBJECT NAME CONSISTENCY — same physical object referred to by different names → standardize to the most specific name used:
+   e.g. "shears", "wire stripper", "orange pliers" if clearly the same tool → use one name throughout
+   e.g. "green container", "green plastic container", "green lid container" → pick the most descriptive and be consistent
+
+2. LOGICAL CONTINUITY — fix impossible sequences:
+   - An object cannot be picked up if the previous segment already has it in hand (no put-down in between)
+   - A hand cannot perform two different primary actions simultaneously unless both are listed
+   - If seg N ends with placing an object, seg N+1 should not still hold it (unless it was immediately picked back up)
+
+3. LANGUAGE violations:
+   - -ing verb forms → base form (stripping → strip, holding → hold)
+   - Articles (the/a/an) → remove
+   - "and" between actions → replace with ", "
+   - Forbidden words: adjust, manipulate, move, transfer, inspect, check, examine, take, handover, give
+
+Return the COMPLETE corrected sequence as valid JSON — all segments, unchanged IDs/timestamps:
+{"segments": [{"id": N, "start": "HH:MM:SS", "end": "HH:MM:SS", "label": "..."}, ...]}
+""".strip()
+
+
+def _consistency_pass(segments: list, api_key: str, model: str,
+                      base_url: str) -> tuple[list, int, float]:
+    """Pass 3: text-only global consistency review across all segment labels."""
+    if not segments:
+        return segments, 0, 0.0
+
+    emit("consistency_check", total=len(segments))
+
+    seq_text = "\n".join(
+        f'  Seg {s["id"]} ({s["start"]}→{s["end"]}): "{s["label"]}"'
+        for s in segments
+    )
+    user_msg = f"Review and fix the following {len(segments)} segment labels:\n\n{seq_text}"
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": CONSISTENCY_SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_msg},
+                    ],
+                    "max_tokens": 4096,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw = data["choices"][0]["message"]["content"]
+            tokens = data.get("usage", {}).get("total_tokens", 0)
+
+            corrected = _extract_json(raw).get("segments", [])
+            if len(corrected) != len(segments):
+                # Segment count mismatch — discard and keep originals
+                emit("log", message=f"Consistency pass returned {len(corrected)} segments (expected {len(segments)}), keeping originals.")
+                return segments, tokens, 0.0
+
+            # Merge corrected labels back, sanitize, keep original id/timestamps
+            result = []
+            for orig, fix in zip(segments, corrected):
+                label, warnings = _sanitize_label(fix.get("label", orig["label"]))
+                for w in warnings:
+                    emit("log", message=f"Consistency pass seg {orig['id']}: {w}")
+                result.append({"id": orig["id"], "start": orig["start"], "end": orig["end"], "label": label})
+            return result, tokens, 0.0
+
+        except requests.exceptions.HTTPError as exc:
+            if exc.response.status_code == 429 and attempt < max_retries - 1:
+                time.sleep(30 * (attempt + 1))
+                continue
+            emit("log", message=f"Consistency pass failed ({exc}), keeping originals.")
+            return segments, 0, 0.0
+        except Exception as exc:
+            emit("log", message=f"Consistency pass failed ({exc}), keeping originals.")
+            return segments, 0, 0.0
 
 
 def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context: str,
-                            api_key: str, model: str, base_url: str) -> tuple[list, int, float]:
+                            api_key: str, model: str, base_url: str,
+                            max_frames_per_seg: int = 10) -> tuple[list, int, float]:
     """Pass 2: label each pre-defined segment with its own API call (3-5 frames each)."""
 
     def hms_to_seconds(hms: str) -> float:
@@ -1019,16 +1147,28 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
     def sample_frames_for_seg(seg: dict) -> list:
         start_s = hms_to_seconds(seg["start"])
         end_s = hms_to_seconds(seg["end"])
+        duration_s = max(0.1, end_s - start_s)
         sf = [f for f in frames if start_s <= f["timestamp"] <= end_s]
         if not sf:
             mid = (start_s + end_s) / 2
             return [min(frames, key=lambda f: abs(f["timestamp"] - mid))]
-        if len(sf) <= FRAMES_PER_SEG:
+        # Dynamic cap: 2 frames/sec, min 4, capped by tier max
+        target = min(max_frames_per_seg, max(4, int(duration_s * 2)))
+        if len(sf) <= target:
             return sf
-        # Evenly sample FRAMES_PER_SEG indices across the segment
-        n = len(sf)
-        indices = {round(i * (n - 1) / (FRAMES_PER_SEG - 1)) for i in range(FRAMES_PER_SEG)}
-        return [sf[i] for i in sorted(indices)]
+        # Always anchor on first + last frame (catches put-down / pick-up at boundaries)
+        # then fill the middle evenly
+        if target <= 2:
+            return [sf[0], sf[-1]]
+        middle = sf[1:-1]
+        n_fill = target - 2
+        if not middle:
+            return [sf[0], sf[-1]]
+        if n_fill >= len(middle):
+            return sf
+        step = (len(middle) - 1) / (n_fill - 1) if n_fill > 1 else 0
+        mid_indices = sorted({round(i * step) for i in range(n_fill)})
+        return [sf[0]] + [middle[i] for i in mid_indices] + [sf[-1]]
 
     n_segs = len(timestamp_segments)
     emit("annotating", frame_count=len(frames), chunks_total=n_segs)
@@ -1061,10 +1201,21 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
         generate_add_hint = "If a motion is clearly visible but NOT in the label, add it.\n\n"
         existing_label = seg.get("label", "").strip()
         local_analysis = (f"\n{motion_summary}\n\n") if motion_summary else ""
+
+        # Previous segment context — helps resolve boundary actions (pick-up vs put-down)
+        prev_context = ""
+        if accumulated:
+            prev_segs = accumulated[-2:]
+            prev_lines = ["Previously labeled segment(s) — use for continuity and object name consistency:"]
+            for ps in prev_segs:
+                prev_lines.append(f'  Seg {ps["id"]} ({ps["start"]}→{ps["end"]}): "{ps["label"]}"')
+            prev_context = "\n".join(prev_lines) + "\n\n"
+
         if existing_label:
             task_text = (
                 f"The annotator labeled this segment as:\n"
                 f'  "{existing_label}"\n\n'
+                f"{prev_context}"
                 f"Review the {len(seg_frames)} video frames for Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}"
                 f"{local_analysis}"
                 f"{motion_cues}"
@@ -1087,7 +1238,12 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 "         – TRAJECTORY shows high-confidence PLACE   → replace 'pick up' with 'place'\n"
                 "  3. The VELOCITY PROFILE is consistent with the replacement (decelerating → place; accelerating → pick up)\n"
                 "If any condition is not met, keep the annotator's verb.\n\n"
-                "━━━ RULE 1 — Correct wrong hand specifications ━━━\n"
+                "━━━ RULE 1 — Dual-hand format + correct hand specifications ━━━\n"
+                "Output MUST label both hands separately. If the annotator's label only mentions\n"
+                "one hand, expand it by adding the other hand's action (usually 'hold [object] with [hand]').\n"
+                "  Example: annotator wrote 'cut wire with right hand'\n"
+                "  → output: 'hold wire with left hand, cut wire with right hand'\n"
+                "Only use 'with both hands' when both hands do the IDENTICAL action symmetrically.\n\n"
                 "Hand specifications (left hand / right hand / both hands) CAN be corrected.\n"
                 "Use the ★ zone verdict lines in the motion analysis:\n\n"
                 "CRITICAL — 'pick up' means taking an object FROM A SURFACE (table, shelf, floor).\n"
@@ -1128,11 +1284,16 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
             )
         else:
             task_text = (
-                f"Label this segment — Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}"
+                f"Label this segment — Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}\n"
+                f"{prev_context}"
                 f"{local_analysis}"
                 f"Study the {len(seg_frames)} frames as a sequence.\n"
                 f"{motion_cues}"
                 f"{generate_add_hint}"
+                "DUAL-HAND FORMAT: always label both hands. Non-dominant hand is usually 'hold [object] with [hand]'.\n"
+                "  ✓ hold wire with left hand, cut wire with shears in right hand\n"
+                "  ✓ hold cup with left hand, pick up lid with right hand\n"
+                "Only use 'with both hands' when both hands do the identical, symmetrical action.\n\n"
                 "DENSE labeling: this segment may contain 2–3 distinct atomic actions. Do NOT collapse into one generic verb.\n"
                 "Separate multiple actions with ', ' (comma) — never use 'and' between actions.\n"
                 "Do NOT default to 'fold towel' when uncertain — if the orientation changed but you cannot tell how, use 'rotate' or 'flip' based on the cues above.\n\n"
@@ -1162,6 +1323,14 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
         {"id": i + 1, "start": ts["start"], "end": ts["end"], "label": label_map.get(i, "no action")}
         for i, ts in enumerate(timestamp_segments)
     ]
+
+    # Pass 3: global consistency review (text-only, no images)
+    merged, consistency_tokens, consistency_cost = _consistency_pass(
+        merged, api_key, model, base_url
+    )
+    total_tokens += consistency_tokens
+    total_cost += consistency_cost
+
     return merged, total_tokens, total_cost
 
 
@@ -1269,7 +1438,7 @@ def _call_llm_single(frames: list[dict], context: str, api_key: str, model: str,
 
 def call_llm(frames: list[dict], context: str, api_key: str, model: str,
              base_url: str, screenshots: list = [], video_path: str = "",
-             fps: float = 1.0) -> tuple[list, int, float]:
+             fps: float = 1.0, max_frames_per_seg: int = 10) -> tuple[list, int, float]:
     if screenshots:
         # Pass 1: extract timestamps from screenshots (shown as indeterminate in UI)
         emit("annotating", frame_count=len(frames), chunks_total=1)
@@ -1277,7 +1446,10 @@ def call_llm(frames: list[dict], context: str, api_key: str, model: str,
         if not timestamp_segments:
             raise RuntimeError("Could not extract any timestamps from the reference screenshots")
         # Pass 2: _label_with_timestamps emits its own annotating event + per-segment progress
-        segments, tokens, cost = _label_with_timestamps(frames, timestamp_segments, context, api_key, model, base_url)
+        segments, tokens, cost = _label_with_timestamps(
+            frames, timestamp_segments, context, api_key, model, base_url,
+            max_frames_per_seg=max_frames_per_seg,
+        )
         return segments, tokens, cost
 
     # Small jobs: single call (no chunking)
@@ -1351,6 +1523,7 @@ def main():
     # Default frames per second per tier (overridable by backend setting)
     tier_defaults = {"basic": 2.0, "standard": 4.0, "premium": 8.0}
     fps = args.frames_per_sec or tier_defaults[args.tier]
+    max_frames_per_seg = TIER_MAX_FRAMES[args.tier]
 
     try:
         frames, duration = extract_frames(args.video, fps)
@@ -1368,6 +1541,7 @@ def main():
             screenshots=screenshots,
             video_path=args.video,
             fps=fps,
+            max_frames_per_seg=max_frames_per_seg,
         )
 
         emit(
