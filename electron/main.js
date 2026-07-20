@@ -130,16 +130,24 @@ ipcMain.handle("run-annotation", async (event, args) => {
   if (screenshotPaths.length > 0) scriptArgs.push("--screenshots", ...screenshotPaths);
 
   let proc;
+  console.log("[Python] isDev=", isDev, "isPackaged=", app.isPackaged, "VIRTUAL_ENV=", process.env.VIRTUAL_ENV);
   if (isDev) {
     const pyScript = path.join(__dirname, "../process_video.py");
-    proc = spawn(isWin ? "python" : "python3", [pyScript, ...scriptArgs], { env: { ...process.env } });
+    const venvPython = process.env.VIRTUAL_ENV
+      ? path.join(process.env.VIRTUAL_ENV, "bin", "python3")
+      : null;
+    const pythonExe = isWin ? "python" : (venvPython || "python3");
+    console.log("[Python] DEV branch exe=", pythonExe, "script=", pyScript);
+    proc = spawn(pythonExe, [pyScript, ...scriptArgs], { env: { ...process.env } });
   } else if (isWin) {
     // Packaged Windows: run the bundled PyInstaller exe directly (no Python required)
     const exePath = path.join(process.resourcesPath, "process_video.exe");
+    console.log("[Python] WIN branch exe=", exePath);
     proc = spawn(exePath, scriptArgs, { env: { ...process.env } });
   } else {
     // Packaged Linux/Mac: run python3 with the bundled script
     const pyScript = path.join(process.resourcesPath, "process_video.py");
+    console.log("[Python] LINUX-PKG branch script=", pyScript);
     proc = spawn("python3", [pyScript, ...scriptArgs], { env: { ...process.env } });
   }
 

@@ -10,11 +10,18 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import tempfile
 import shutil
 import re
+try:
+    import imageio_ffmpeg as _imageio_ffmpeg
+    _FFMPEG_EXE = _imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    _imageio_ffmpeg = None
+    _FFMPEG_EXE = shutil.which("ffmpeg")
 import threading
 import cv2
 import numpy as np
@@ -24,6 +31,47 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CHUNK_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".atlas_capture", "chunk_cache")
 CHUNK_CACHE_TTL = 86400  # 24 hours
+
+# ── Few-shot examples library ─────────────────────────────────────────────────
+_EXAMPLES_SEARCH_PATHS = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "examples_library.json"),
+    os.path.join(os.path.expanduser("~"), ".atlas_capture", "examples_library.json"),
+    os.path.join(os.path.expanduser("~"), "Pictures", "ATLAS CAPTURE TOOL", "examples_library.json"),
+]
+
+def _load_examples() -> list:
+    for path in _EXAMPLES_SEARCH_PATHS:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    return json.load(f).get("examples", [])
+            except Exception:
+                pass
+    return []
+
+def _build_few_shot_block(context: str, examples: list) -> str:
+    """Pick the most relevant example set and format as a few-shot block."""
+    if not examples:
+        return ""
+    ctx_lower = context.lower()
+    scored = []
+    for ex in examples:
+        score = sum(1 for kw in ex.get("keywords", []) if kw in ctx_lower)
+        scored.append((score, ex))
+    scored.sort(key=lambda x: -x[0])
+    best = scored[0][1]
+    labels = best.get("sample_labels", [])[:8]
+    if not labels:
+        return ""
+    lines = [
+        "━━━ CONFIRMED REFERENCE LABELS (from a verified similar task — match this quality) ━━━",
+        f"Task: {best['description']}",
+        "Examples:",
+    ]
+    for lbl in labels:
+        lines.append(f'  • "{lbl}"')
+    lines.append("━━━ END REFERENCE ━━━\n")
+    return "\n".join(lines) + "\n"
 
 
 def _cache_key(video_path: str, fps: float, chunk_idx: int) -> str:
@@ -110,24 +158,22 @@ NO ACTION: label "no action" only when hands touch nothing for more than 5 conse
 ━━━━━━━━━━━━━━━━━━━━━━━━
 VERB RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━
-Object leaves a flat open surface → "pick up"  (never: pick, take)
-Object retrieved from a confined space (fridge shelf, cabinet, drawer, rack) → "grasp [item] from [location]"
-  ✓ grasp milk bottle from refrigerator with right hand
-  ✗ pick up milk bottle from refrigerator  (reserved for flat surfaces)
-Object carried across space (transport from one location to another) → "carry [item] from [A] to [B]"
-  ✓ carry milk bottle from refrigerator with both hands  (then "place" in same segment)
+Object leaves any surface → "pick up"  (NEVER: pick, take, grasp — all forbidden)
 Object contacts a surface → "place [object] on [destination]"  — destination = actual surface or object, not a vague region
   ✓ place cup on table   ✓ place lid on container   ✗ place cup down
+Object moved between locations within scene → "reposition"
+Object carried from one place to another → "carry [item] from [A] to [B]"
 Lid / cap removal → "pull [lid/cap] off [object]"  or  "remove [lid] from [object]"
 Lid / cap attachment → "press [lid] onto [object]"  or  "place [lid] on [object]"
-Object moved between locations → "reposition"
 Button / switch → "press [button/switch]"
+Tool use format: "[action] [object] with [tool] in [hand]"
+  ✓ wipe cup with cloth in right hand   ✗ wipe cup with cloth with right hand
 
-Instead of "adjust" → choose the most precise verb:
-  shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
+Instead of "adjust" → shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
 
-Instead of "manipulate" → choose the most precise verb:
-  grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+Instead of "manipulate" → grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+  ✓ work dough with both hands   ✓ grip storage cart with both hands
+  Pick the specific action — if unclear, use "work [object]" as last resort
 
 Instead of "move" → "reposition" (within same location) or "carry" (between locations)
 Instead of "transfer" → use "pick up" and "place"
@@ -161,7 +207,7 @@ OBJECT NAMING
 FORBIDDEN WORDS — never use these
 ━━━━━━━━━━━━━━━━━━━━━━━━
 adjust, manipulate, move, transfer, inspect, check, examine, reach
-pick (alone), take
+pick (alone), take, grasp  (always "pick up")
 handover, give  (for object hand-off — use pass, put, hand over instead)
 it, them, they  (pronouns — always use the object name)
 -ing form of any verb  (use base form: "pick up" not "picking up", "fold" not "folding", "smoothen" not "smoothening")
@@ -243,9 +289,9 @@ LABEL FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━
 VERB RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━
-Object leaves flat open surface → "pick up"  (never: pick, take)
-Object retrieved from confined space (fridge, cabinet, drawer) → "grasp [item] from [location]"
-  ✓ grasp bottle from refrigerator with right hand
+Object leaves any surface → "pick up"  (NEVER: pick, take, grasp — all forbidden)
+Tool use format: "[action] [object] with [tool] in [hand]"
+  ✓ wipe cup with cloth in right hand   ✗ wipe cup with cloth with right hand
 Object carried between locations → "carry [item] from [A]" + "place [item] on [B]" in same segment
 Object contacts surface/object → "place [item] on [destination]"  (destination = actual surface or object)
   ✓ place lid on container   ✓ place cup on table   ✗ place cup down
@@ -268,7 +314,7 @@ NO ACTION: only when hands touch nothing AND ego is idle for the ENTIRE segment 
 FORBIDDEN WORDS
 ━━━━━━━━━━━━━━━━━━━━━━━━
 adjust, manipulate, move, transfer, inspect, check, examine, reach
-pick (alone), take, handover, give
+pick (alone), take, grasp, handover, give
 it, them, they  (use the object name)
 -ing form of any verb  (fold not folding, smoothen not smoothening, pick up not picking up)
 the, a, an  (no articles)
@@ -293,11 +339,12 @@ OUTPUT FORMAT — valid JSON only, no extra text
 _FORBIDDEN_WORD_MAP = {
     # word/phrase → replacement
     r"\badjust\b": "reposition",
-    r"\bmanipulate\b": "work with",
+    r"\bmanipulate\b": "work",
+    r"\bgrasp\b": "pick up",
     r"\btransfer\b": "pass",
     r"\bhandover\b": "hand over",
     r"\bgive\b": "pass",
-    r"\binspect\b": "examine visually",   # will be caught and replaced with better verb below
+    r"\binspect\b": "look at",
     r"\bcheck\b": "verify",
     r"\bexamine\b": "look at",
     r"\breach\b": "extend hand toward",
@@ -309,7 +356,7 @@ _FORBIDDEN_WORD_MAP = {
 }
 
 # These warrant a flag to the UI rather than silent replacement
-_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give", "move"}
+_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give", "move", "grasp"}
 
 _VERB_ING_RE = re.compile(
     r"\b(pick(?:ing)?(?:\s+up)?|plac|fold|smooth(?:en)?|grip|hold|rotat|flip|tuck|flatten|align|loosen|tighten|push|pull|press|twist|squeez|pinch|assembl|apply)ing\b",
@@ -328,14 +375,17 @@ def _sanitize_label(label: str) -> tuple[str, list[str]]:
     # Fix -ing verbs → base form
     def _fix_ing(m):
         stem = m.group(1)
-        # Special case: "picking up" → "pick up"
         if stem.lower().startswith("pick"):
             return "pick up"
         return stem.rstrip("e") if stem.endswith("e") else stem
 
     cleaned = _VERB_ING_RE.sub(_fix_ing, cleaned)
 
-    # Log hard forbidden words as warnings but leave the label unchanged
+    # Apply substitutions (forbidden words → correct alternatives)
+    for pattern, replacement in _FORBIDDEN_WORD_MAP.items():
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+
+    # Log any remaining hard forbidden words after substitution
     for word in _HARD_FORBIDDEN:
         pattern = re.compile(rf"\b{re.escape(word)}\w*\b", re.IGNORECASE)
         if pattern.search(cleaned):
@@ -345,7 +395,6 @@ def _sanitize_label(label: str) -> tuple[str, list[str]]:
     cleaned = re.sub(r"\b(the|an?) (?=[a-zA-Z])", "", cleaned)
 
     # Replace ' and ' between actions with ', '
-    # e.g. "pick up bottle with right hand and rotate bottle" → "pick up bottle with right hand, rotate bottle"
     cleaned = re.sub(r"\s+and\s+", ", ", cleaned)
 
     # Collapse multiple spaces
@@ -408,6 +457,313 @@ def _extract_one(video_path: str, ts: float, rotation: int) -> dict | None:
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
     b64 = base64.b64encode(buf.tobytes()).decode()
     return {"timestamp": ts, "time_str": time_str, "b64": b64}
+
+
+def _cut_video_clip(video_path: str, start_s: float, end_s: float) -> str | None:
+    """
+    Cut a segment from the video and return it as a base64-encoded H.264 MP4.
+    Uses the ffmpeg binary bundled with imageio-ffmpeg (works in packaged .exe).
+    Returns None on failure.
+    """
+    duration = max(0.1, end_s - start_s)
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    if not _FFMPEG_EXE:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                _FFMPEG_EXE, "-y",
+                "-ss", str(start_s),
+                "-t",  str(duration),
+                "-i",  video_path,
+                "-vf", "scale=480:-2",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "32",
+                "-an",
+                "-movflags", "+faststart",
+                "-f", "mp4",
+                tmp_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            with open(tmp_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            os.unlink(tmp_path)
+            return b64
+    except Exception:
+        pass
+
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+    return None
+
+
+# ── CV hand trajectory analysis ───────────────────────────────────────────────
+
+def _decode_b64_frame(b64: str):
+    """Decode a base64 JPEG to a BGR numpy array. Returns None on failure."""
+    try:
+        arr = np.frombuffer(base64.b64decode(b64), dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+def _analyze_hand_trajectories(frames: list[dict]) -> dict:
+    """
+    Dense optical flow with temporal zone analysis to classify each hand's action.
+
+    In egocentric video:  RIGHT hand → RIGHT half of frame
+                          LEFT  hand → LEFT  half of frame
+
+    Key insight: net displacement alone cannot distinguish "place on elevated
+    surface" (upward motion) from "pick up". The reliable signal is the
+    VELOCITY PROFILE across time:
+        - pick up  → hand accelerates away from surface (last third faster than first)
+        - place    → hand decelerates as it arrives at surface (last third slower / stationary)
+
+    Camera-shake is removed by subtracting the global median flow each frame.
+    """
+    base = {
+        "left_action": "hold", "right_action": "hold",
+        "left_dy": 0.0,        "right_dy": 0.0,
+        "left_dx": 0.0,        "right_dx": 0.0,
+        "left_magnitude": 0.0, "right_magnitude": 0.0,
+        "cv_confidence": 0.3,  "both_hands": False,
+        "n_frames": len(frames),
+    }
+
+    imgs = [_decode_b64_frame(f["b64"]) for f in frames]
+    imgs = [img for img in imgs if img is not None]
+    if len(imgs) < 2:
+        return base
+
+    h, w = imgs[0].shape[:2]
+    mid_x   = w // 2
+    y_start = int(h * 0.35)   # hands live in the bottom 65%
+    bg_end  = int(h * 0.30)   # top 30% = background only (no hands)
+
+    l_dys, l_dxs, r_dys, r_dxs = [], [], [], []
+    # 90th-percentile magnitude per frame-pair (catches fine localised motion)
+    l_p90s, r_p90s = [], []
+
+    for i in range(len(imgs) - 1):
+        g1 = cv2.cvtColor(imgs[i],     cv2.COLOR_BGR2GRAY)
+        g2 = cv2.cvtColor(imgs[i + 1], cv2.COLOR_BGR2GRAY)
+
+        # Two-pass optical flow: coarse (large winsize) + fine (small winsize)
+        flow_c = cv2.calcOpticalFlowFarneback(
+            g1, g2, None, pyr_scale=0.5, levels=3, winsize=15,
+            iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+        )
+        flow_f = cv2.calcOpticalFlowFarneback(
+            g1, g2, None, pyr_scale=0.5, levels=3, winsize=7,
+            iterations=5, poly_n=5, poly_sigma=1.1, flags=0,
+        )
+        # Blend: fine flow for small motions, coarse for large ones
+        mag_c = np.sqrt(flow_c[..., 0]**2 + flow_c[..., 1]**2)
+        blend = np.clip(mag_c / 3.0, 0, 1)[..., np.newaxis]   # 0→fine, 1→coarse
+        flow  = flow_f * (1 - blend) + flow_c * blend
+
+        # Shake compensation from BACKGROUND ONLY (top 30%, no hands in view)
+        bg = flow[:bg_end, :]
+        g_dx = float(np.median(bg[..., 0])) if bg_end > 0 else 0.0
+        g_dy = float(np.median(bg[..., 1])) if bg_end > 0 else 0.0
+
+        hz = flow[y_start:, :]   # hand zone
+
+        def wmean(zone, axis):
+            """Magnitude-weighted mean — focuses on pixels that moved most."""
+            mag = np.sqrt(zone[..., 0]**2 + zone[..., 1]**2) + 1e-6
+            return float(np.sum(zone[..., axis] * mag) / np.sum(mag))
+
+        def p90mag(zone):
+            """90th-percentile magnitude — catches fine localised hand motion."""
+            mags = np.sqrt(zone[..., 0]**2 + zone[..., 1]**2)
+            return float(np.percentile(mags, 90))
+
+        lz = hz[:, :mid_x]
+        rz = hz[:, mid_x:]
+
+        l_dys.append(wmean(lz, 1) - g_dy)
+        l_dxs.append(wmean(lz, 0) - g_dx)
+        r_dys.append(wmean(rz, 1) - g_dy)
+        r_dxs.append(wmean(rz, 0) - g_dx)
+        l_p90s.append(p90mag(lz))
+        r_p90s.append(p90mag(rz))
+
+    # ── Thresholds ────────────────────────────────────────────────────────────
+    PASSIVE      = 0.5    # px/frame — below this the zone is stationary (lowered for fine motions)
+    ACTIVE       = 1.8    # px/frame — clearly moving
+    FINE_PASSIVE = 0.25   # px/frame — minimum for fine-motion path
+    CONSISTENCY  = 0.70   # fraction of frames that must agree on direction
+
+    def classify_zone(dys, dxs, p90s):
+        """
+        Temporal zone classifier with direction consistency and fine-motion detection.
+
+        Three detection paths:
+          1. Standard: magnitude-based with temporal zone (first/last third)
+          2. Fine: consistent weak motion below PASSIVE but above FINE_PASSIVE
+          3. P90: localised fine motion via 90th-percentile magnitude
+        """
+        n = len(dys)
+        if n == 0:
+            return "hold", 0.5, 0.0, 0.0
+
+        mags    = [abs(dy) + abs(dx) for dy, dx in zip(dys, dxs)]
+        net_mag = float(np.mean(mags))
+        net_dy  = float(np.mean(dys))
+        net_dx  = float(np.mean(dxs))
+        net_p90 = float(np.mean(p90s))
+
+        # ── Direction consistency (works even when magnitude is small) ─────────
+        n_up   = sum(1 for dy in dys if dy < -FINE_PASSIVE)
+        n_down = sum(1 for dy in dys if dy >  FINE_PASSIVE)
+        consistency = max(n_up, n_down) / (n + 1e-6)
+        dir_up = n_up > n_down
+
+        # ── Fine-motion path: weak but consistent directional signal ──────────
+        if FINE_PASSIVE <= net_mag < PASSIVE and consistency >= CONSISTENCY:
+            if dir_up:
+                return "pick up", 0.60 + consistency * 0.08, net_dy, net_dx
+            else:
+                return "place",   0.60 + consistency * 0.08, net_dy, net_dx
+
+        # ── Localised fine motion (90th-percentile) ───────────────────────────
+        if net_mag < PASSIVE and net_p90 >= 1.5 and consistency >= CONSISTENCY:
+            if dir_up:
+                return "pick up", 0.62, net_dy, net_dx
+            else:
+                return "place",   0.62, net_dy, net_dx
+
+        # ── Standard path: hard hold cutoff ───────────────────────────────────
+        if net_mag < PASSIVE:
+            return "hold", 0.78, net_dy, net_dx
+
+        t          = max(1, n // 3)
+        first_mag  = float(np.mean(mags[:t]))
+        last_mag   = float(np.mean(mags[-t:]))
+        first_dy   = float(np.mean(dys[:t]))
+        last_dy    = float(np.mean(dys[-t:]))
+        decel_r    = last_mag / (first_mag + 1e-6)
+
+        stationary_end   = last_mag  < PASSIVE
+        stationary_start = first_mag < PASSIVE
+        decelerating     = decel_r   < 0.62
+        accelerating     = decel_r   > 1.40
+
+        # Place: hand arrives and stops (table OR elevated surface)
+        # Guard: if net motion is strongly upward the hand just lifted & held — not a place
+        if stationary_end and net_mag > PASSIVE and net_dy > -1.2:
+            conf = min(0.93, 0.76 + net_mag * 0.02)
+            return "place", conf, net_dy, net_dx
+
+        # Place: clear deceleration approaching a surface
+        # Guard: only fire when motion is not clearly upward (upward decel = pick up that stopped)
+        if decelerating and first_mag > PASSIVE and net_dy > -1.0:
+            conf = min(0.88, 0.68 + (1.0 - decel_r) * 0.28)
+            return "place", conf, net_dy, net_dx
+
+        # Pick up: stationary at start then accelerates upward
+        if stationary_start and last_dy < -1.0:
+            conf = min(0.92, 0.75 + abs(last_dy) * 0.04)
+            return "pick up", conf, net_dy, net_dx
+
+        # Pick up: accelerating net-upward motion
+        if accelerating and net_dy < -1.2:
+            conf = min(0.90, 0.72 + abs(net_dy) * 0.04)
+            return "pick up", conf, net_dy, net_dx
+
+        # Pick up: stationary start then any sustained motion (sideways reach)
+        if stationary_start and net_mag > ACTIVE:
+            return "pick up", 0.67, net_dy, net_dx
+
+        # Fallback: net displacement + consistency
+        vert = abs(net_dy) / (abs(net_dy) + abs(net_dx) + 1e-6)
+        if vert >= 0.55:
+            if net_dy < -1.2 or (net_dy < -0.6 and consistency >= CONSISTENCY and dir_up):
+                return "pick up", 0.68, net_dy, net_dx
+            if net_dy > 1.2 or (net_dy > 0.6 and consistency >= CONSISTENCY and not dir_up):
+                return "place",   0.68, net_dy, net_dx
+
+        if net_mag >= ACTIVE:
+            return "reposition", 0.65, net_dy, net_dx
+        return "hold", 0.55, net_dy, net_dx
+
+    l_act, l_conf, l_dy, l_dx = classify_zone(l_dys, l_dxs, l_p90s)
+    r_act, r_conf, r_dy, r_dx = classify_zone(r_dys, r_dxs, r_p90s)
+
+    l_mag = float(np.hypot(np.mean(l_dys), np.mean(l_dxs)))
+    r_mag = float(np.hypot(np.mean(r_dys), np.mean(r_dxs)))
+
+    same_dir = (
+        (l_act in ("pick up", "place") and (l_dy * r_dy) > 0)
+        or l_act == "reposition"
+    )
+    both = (
+        l_act == r_act and l_act != "hold"
+        and abs(l_mag - r_mag) / (max(l_mag, r_mag) + 1e-6) < 0.45
+        and same_dir
+    )
+
+    return {
+        "left_action": l_act,    "right_action": r_act,
+        "left_dy": l_dy,         "right_dy": r_dy,
+        "left_dx": l_dx,         "right_dx": r_dx,
+        "left_magnitude": l_mag, "right_magnitude": r_mag,
+        "cv_confidence": (l_conf + r_conf) / 2,
+        "both_hands": both,
+        "n_frames": len(imgs),
+    }
+
+
+def _build_cv_block(cv: dict) -> str:
+    """
+    Format CV trajectory analysis as an authoritative block to inject into LLM prompts.
+    When confidence >= 70%, action verbs become binding constraints for the LLM.
+    """
+    conf  = cv["cv_confidence"]
+    level = "HIGH" if conf >= 0.80 else "MODERATE" if conf >= 0.65 else "LOW"
+
+    def hand_line(side, action, dy, dx):
+        mag_s = f"dy={dy:+.1f} dx={dx:+.1f} px/frame"
+        arrows = {"pick up": "↑ UPWARD motion", "place": "↓ DOWNWARD motion",
+                  "hold": "· NO large vertical motion (may still be active manipulation)",
+                  "reposition": "↔ LATERAL motion"}
+        return f"  {side.upper():5s} hand: {arrows.get(action, action)} ({mag_s}) → {action}"
+
+    lines = [
+        f"━━━ CV OPTICAL FLOW ANALYSIS ({level} confidence {conf:.0%}, n={cv['n_frames']} frames) ━━━",
+        "  Detects DIRECTION of hand motion only — NOT semantic actions (fold, cut, smooth, etc.).",
+        hand_line("left",  cv["left_action"],  cv["left_dy"],  cv["left_dx"]),
+        hand_line("right", cv["right_action"], cv["right_dy"], cv["right_dx"]),
+    ]
+    if cv["both_hands"]:
+        lines.append("  Both zones show matching motion → 'with both hands' is appropriate.")
+
+    if conf >= 0.80:
+        lines += [
+            "",
+            "⚠ CONSTRAINT (conf ≥80%): If CV shows UPWARD motion → label must include 'pick up'.",
+            "  If CV shows DOWNWARD motion → label must include 'place'.",
+            "  CV 'hold' / 'reposition' = no strong vertical motion detected — you MUST still label",
+            "  any semantic manipulation you see (fold, cut, smoothen, adjust, etc.).",
+            "  CV does NOT detect semantic actions — only use it to resolve pick up vs place.",
+        ]
+    else:
+        lines.append("NOTE: CV confidence below 80% — use as a directional hint only, not a constraint.")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines) + "\n\n"
 
 
 def extract_frames(video_path: str, frames_per_sec: float) -> tuple[list[dict], float]:
@@ -1128,10 +1484,11 @@ def _consistency_pass(segments: list, api_key: str, model: str,
 
 def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context: str,
                             api_key: str, model: str, base_url: str,
-                            max_frames_per_seg: int = 10) -> tuple[list, int, float]:
-    """Pass 2: label each pre-defined segment with its own API call (3-5 frames each)."""
+                            max_frames_per_seg: int = 10,
+                            video_path: str = "") -> tuple[list, int, float]:
+    """Pass 2: label each pre-defined segment using video clips (or frames as fallback)."""
 
-    def hms_to_seconds(hms: str) -> float:
+    def hms_to_seconds(hms: str) -> float:  # noqa: E306
         parts = hms.strip().split(":")
         if len(parts) == 3:
             h, m, s = parts
@@ -1143,6 +1500,8 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
             return float(parts[0])
 
     video_name_hint = f"Context: {context}" if context else ""
+    examples = _load_examples()
+    few_shot_block = _build_few_shot_block(context, examples)
 
     def sample_frames_for_seg(seg: dict) -> list:
         start_s = hms_to_seconds(seg["start"])
@@ -1181,6 +1540,22 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
     for seg_idx, seg in enumerate(timestamp_segments):
         seg_frames = sample_frames_for_seg(seg)
         seg_id = seg.get("id", seg_idx + 1)
+        start_s = hms_to_seconds(seg["start"])
+        end_s   = hms_to_seconds(seg["end"])
+
+        # Try native video clip first (ffmpeg); fall back to extracted frames
+        clip_b64 = _cut_video_clip(video_path, start_s, end_s) if video_path else None
+
+        # CV trajectory analysis — local, no API call, camera-shake compensated
+        cv_traj = _analyze_hand_trajectories(seg_frames)
+        cv_block = _build_cv_block(cv_traj)
+        emit("log", message=(
+            f"[CV] Seg {seg_id}: "
+            f"LEFT={cv_traj['left_action']} (dy={cv_traj['left_dy']:+.1f}) "
+            f"RIGHT={cv_traj['right_action']} (dy={cv_traj['right_dy']:+.1f}) "
+            f"conf={cv_traj['cv_confidence']:.0%} "
+            f"both={cv_traj['both_hands']}"
+        ))
 
         # Run local analysis — fast, runs before the LLM call
         motion_summary = _build_motion_summary(seg_frames)
@@ -1211,12 +1586,15 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 prev_lines.append(f'  Seg {ps["id"]} ({ps["start"]}→{ps["end"]}): "{ps["label"]}"')
             prev_context = "\n".join(prev_lines) + "\n\n"
 
+        media_desc = "video clip" if clip_b64 else f"{len(seg_frames)} video frames"
         if existing_label:
             task_text = (
                 f"The annotator labeled this segment as:\n"
                 f'  "{existing_label}"\n\n'
                 f"{prev_context}"
-                f"Review the {len(seg_frames)} video frames for Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}"
+                f"{few_shot_block}"
+                f"{cv_block}"
+                f"Review the {media_desc} for Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}"
                 f"{local_analysis}"
                 f"{motion_cues}"
                 "YOUR ROLE: Quality-assure the annotator's label. The annotator watched the full video — trust their action words.\n\n"
@@ -1224,20 +1602,16 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 "The annotator's ACTION VERBS (pick up, rotate, fold, flip, place, smoothen, etc.) ARE CORRECT.\n"
                 "Do NOT replace or remove any action verb the annotator wrote based on optical flow or visual ambiguity.\n"
                 "Your output must preserve all of the annotator's core action verbs.\n\n"
-                "━━━ EXCEPTION — Physically incompatible verbs ━━━\n"
-                "You MAY replace an annotated verb ONLY when all three conditions hold:\n"
-                "  1. The TRAJECTORY block shows HIGH-confidence evidence (directness > 0.65) for a different action\n"
-                "  2. The annotated verb is PHYSICALLY INCOMPATIBLE with that trajectory — meaning the two actions\n"
-                "     cannot co-occur in the same time window. Use these incompatibility rules:\n"
-                "       • 'rotate' or 'flip' → object stays in-plane; incompatible with net vertical travel\n"
-                "         – TRAJECTORY shows high-confidence PLACE  → replace 'rotate'/'flip' with 'place'\n"
-                "         – TRAJECTORY shows high-confidence PICK UP → replace 'rotate'/'flip' with 'pick up'\n"
-                "       • 'place' → object moves downward to surface; incompatible with sustained upward motion\n"
-                "         – TRAJECTORY shows high-confidence PICK UP → replace 'place' with 'pick up'\n"
-                "       • 'pick up' → object leaves surface; incompatible with sustained downward motion\n"
-                "         – TRAJECTORY shows high-confidence PLACE   → replace 'pick up' with 'place'\n"
-                "  3. The VELOCITY PROFILE is consistent with the replacement (decelerating → place; accelerating → pick up)\n"
-                "If any condition is not met, keep the annotator's verb.\n\n"
+                "━━━ EXCEPTION — CV analysis overrides when confidence is HIGH ━━━\n"
+                "You MAY replace an annotated verb ONLY when ALL three conditions hold:\n"
+                "  1. The CV OPTICAL FLOW ANALYSIS above shows HIGH confidence (≥80%) for a different action\n"
+                "  2. The annotated verb is PHYSICALLY INCOMPATIBLE with that measurement:\n"
+                "       • CV=pick up  AND annotator wrote 'place'  → replace with 'pick up'\n"
+                "       • CV=place    AND annotator wrote 'pick up' → replace with 'place'\n"
+                "       • CV=hold     AND annotator wrote 'pick up' or 'place' with very low CV magnitude → remove that action\n"
+                "  3. The velocity profile in the CV block (stationary-end → place; accelerating → pick up) is consistent\n"
+                "When CV confidence is MODERATE (<80%): treat as a hint only — do NOT override the annotator's verb.\n"
+                "When CV confidence is LOW (<65%): ignore CV for action verb decisions.\n\n"
                 "━━━ RULE 1 — Dual-hand format + correct hand specifications ━━━\n"
                 "Output MUST label both hands separately. If the annotator's label only mentions\n"
                 "one hand, expand it by adding the other hand's action (usually 'hold [object] with [hand]').\n"
@@ -1279,15 +1653,17 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 "  - Articles present (the/a/an) → remove them\n"
                 "  - Multiple actions joined with 'and' → replace with ', ' (comma)\n"
                 "  - Label exceeds 20 words → shorten\n\n"
-                f"Return ONLY valid JSON with exactly 1 segment:\n"
-                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<corrected label>"}}]}}'
+                f"Return ONLY valid JSON with exactly 1 segment (include your confidence 1–5):\n"
+                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<corrected label>", "confidence": <1-5>}}]}}'
             )
         else:
             task_text = (
                 f"Label this segment — Segment {seg_id}: {seg['start']} → {seg['end']}. {video_name_hint}\n"
                 f"{prev_context}"
+                f"{few_shot_block}"
+                f"{cv_block}"
                 f"{local_analysis}"
-                f"Study the {len(seg_frames)} frames as a sequence.\n"
+                f"Study the {media_desc} as a sequence.\n"
                 f"{motion_cues}"
                 f"{generate_add_hint}"
                 "DUAL-HAND FORMAT: always label both hands. Non-dominant hand is usually 'hold [object] with [hand]'.\n"
@@ -1297,30 +1673,44 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 "DENSE labeling: this segment may contain 2–3 distinct atomic actions. Do NOT collapse into one generic verb.\n"
                 "Separate multiple actions with ', ' (comma) — never use 'and' between actions.\n"
                 "Do NOT default to 'fold towel' when uncertain — if the orientation changed but you cannot tell how, use 'rotate' or 'flip' based on the cues above.\n\n"
-                f"Return ONLY valid JSON with exactly 1 segment:\n"
-                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<label with hand specification>"}}]}}'
+                f"Return ONLY valid JSON with exactly 1 segment (include your confidence 1–5):\n"
+                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<label with hand specification>", "confidence": <1-5>}}]}}'
             )
 
         content = [{"type": "text", "text": task_text}]
-        for f in seg_frames:
-            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
+        if clip_b64:
+            content.append({"type": "image_url", "image_url": {"url": f"data:video/mp4;base64,{clip_b64}"}})
+        else:
+            for f in seg_frames:
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
 
         output_segs, tokens, cost = _call_label_batch_request(content, api_key, model, base_url)
         total_tokens += tokens
         total_cost += cost
 
-        raw_label = output_segs[0].get("label", "no action") if output_segs else "no action"
+        out = output_segs[0] if output_segs else {}
+        raw_label = out.get("label", "no action")
+        confidence = int(out.get("confidence", 3))
         label, warnings = _sanitize_label(raw_label)
         for w in warnings:
             emit("log", message=f"Segment {seg_id} ({seg['start']}→{seg['end']}): {w}")
+        if confidence <= 2:
+            emit("warning", message=(
+                f"Segment {seg_id} ({seg['start']}→{seg['end']}): low confidence ({confidence}/5) — "
+                f"label '{label}' should be reviewed by a human."
+            ))
+        elif confidence == 3:
+            emit("log", message=f"Segment {seg_id} ({seg['start']}→{seg['end']}): moderate confidence ({confidence}/5) — '{label}'")
         label_map[seg_idx] = label
 
-        accumulated.append({"id": seg_idx + 1, "start": seg["start"], "end": seg["end"], "label": label})
+        accumulated.append({"id": seg_idx + 1, "start": seg["start"], "end": seg["end"], "label": label, "confidence": confidence})
         emit("partial_segments", segments=list(accumulated))
         emit("annotating_progress", chunks_done=seg_idx + 1, chunks_total=n_segs, from_cache=False)
 
+    conf_map = {s["id"] - 1: s.get("confidence", 3) for s in accumulated}
     merged = [
-        {"id": i + 1, "start": ts["start"], "end": ts["end"], "label": label_map.get(i, "no action")}
+        {"id": i + 1, "start": ts["start"], "end": ts["end"],
+         "label": label_map.get(i, "no action"), "confidence": conf_map.get(i, 3)}
         for i, ts in enumerate(timestamp_segments)
     ]
 
@@ -1439,6 +1829,7 @@ def _call_llm_single(frames: list[dict], context: str, api_key: str, model: str,
 def call_llm(frames: list[dict], context: str, api_key: str, model: str,
              base_url: str, screenshots: list = [], video_path: str = "",
              fps: float = 1.0, max_frames_per_seg: int = 10) -> tuple[list, int, float]:
+    emit("log", message=f"[ffmpeg] exe={_FFMPEG_EXE!r} python={sys.executable!r}")
     if screenshots:
         # Pass 1: extract timestamps from screenshots (shown as indeterminate in UI)
         emit("annotating", frame_count=len(frames), chunks_total=1)
@@ -1449,6 +1840,7 @@ def call_llm(frames: list[dict], context: str, api_key: str, model: str,
         segments, tokens, cost = _label_with_timestamps(
             frames, timestamp_segments, context, api_key, model, base_url,
             max_frames_per_seg=max_frames_per_seg,
+            video_path=video_path,
         )
         return segments, tokens, cost
 

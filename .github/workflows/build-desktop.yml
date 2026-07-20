@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pyinstaller opencv-python requests
+        run: pip install pyinstaller opencv-python-headless numpy requests imageio-ffmpeg
 
       - name: Build process_video.exe with PyInstaller
         run: pyinstaller process_video.spec --distpath . --workpath build/pyinstaller

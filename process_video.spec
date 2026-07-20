@@ -2,15 +2,26 @@
 # PyInstaller spec for process_video.py
 # Run: pyinstaller process_video.spec
 
+import imageio_ffmpeg
+import os
+
 block_cipher = None
+
+# Include the bundled ffmpeg binary from imageio_ffmpeg
+ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+ffmpeg_binaries = [(ffmpeg_exe, 'imageio_ffmpeg/binaries')]
 
 a = Analysis(
     ['process_video.py'],
     pathex=[],
-    binaries=[],
+    binaries=ffmpeg_binaries,
     datas=[],
     hiddenimports=[
         'cv2',
+        'numpy',
+        'numpy.core',
+        'numpy.core._multiarray_umath',
+        'imageio_ffmpeg',
         'requests',
         'requests.adapters',
         'requests.auth',
