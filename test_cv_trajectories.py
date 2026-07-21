@@ -120,11 +120,12 @@ def main():
             f"{cv['cv_confidence']:>5.0%}  {both_s:>4}  {ref}"
         )
 
-        # Detailed numbers
+        mp_s = f"MediaPipe {cv.get('mp_detection_rate', 0):.0%}" if cv.get("mediapipe_used") else "optical-flow"
         print(
             f"       dy L={cv['left_dy']:+.2f} R={cv['right_dy']:+.2f}  "
             f"mag L={cv['left_magnitude']:.2f} R={cv['right_magnitude']:.2f}  "
-            f"n={cv['n_frames']} frames"
+            f"grip L={cv.get('left_grip','?')} R={cv.get('right_grip','?')}  "
+            f"{mp_s}  n={cv['n_frames']} frames"
         )
         print()
 

@@ -26,6 +26,42 @@ import threading
 import cv2
 import numpy as np
 import requests
+try:
+    import mediapipe as mp
+    from mediapipe.tasks import python as _mp_python
+    from mediapipe.tasks.python import vision as _mp_vision
+    _MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    _MEDIAPIPE_AVAILABLE = False
+
+_HAND_MODEL_URL  = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+_HAND_MODEL_PATH = os.path.join(os.path.expanduser("~"), ".cache", "atlas_capture", "hand_landmarker.task")
+_hand_landmarker = None  # cached singleton
+
+def _get_hand_landmarker():
+    global _hand_landmarker
+    if _hand_landmarker is not None:
+        return _hand_landmarker
+    if not _MEDIAPIPE_AVAILABLE:
+        return None
+    if not os.path.exists(_HAND_MODEL_PATH):
+        os.makedirs(os.path.dirname(_HAND_MODEL_PATH), exist_ok=True)
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(_HAND_MODEL_URL, _HAND_MODEL_PATH)
+        except Exception:
+            return None
+    try:
+        opts = _mp_vision.HandLandmarkerOptions(
+            base_options=_mp_python.BaseOptions(model_asset_path=_HAND_MODEL_PATH),
+            running_mode=_mp_vision.RunningMode.IMAGE,
+            num_hands=2,
+            min_hand_detection_confidence=0.4,
+        )
+        _hand_landmarker = _mp_vision.HandLandmarker.create_from_options(opts)
+        return _hand_landmarker
+    except Exception:
+        return None
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -313,8 +349,9 @@ NO ACTION: only when hands touch nothing AND ego is idle for the ENTIRE segment 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 FORBIDDEN WORDS
 ━━━━━━━━━━━━━━━━━━━━━━━━
-adjust, manipulate, move, transfer, inspect, check, examine, reach
+adjust, manipulate, move, transfer, inspect, check, examine, reach, extend
 pick (alone), take, grasp, handover, give
+Instead of "extend hand toward" / "reach for" → pick up
 it, them, they  (use the object name)
 -ing form of any verb  (fold not folding, smoothen not smoothening, pick up not picking up)
 the, a, an  (no articles)
@@ -347,7 +384,9 @@ _FORBIDDEN_WORD_MAP = {
     r"\binspect\b": "look at",
     r"\bcheck\b": "verify",
     r"\bexamine\b": "look at",
-    r"\breach\b": "extend hand toward",
+    r"\breach\b": "pick up",
+    r"\bextend\s+hand\s+toward\b": "pick up",
+    r"\bextend\b": "pick up",
     r"\btake\b": "pick up",
     r"\b(pick|take)\s+(?!up\b)": "pick up ",
     r"\bthe\s+": "",
@@ -356,7 +395,7 @@ _FORBIDDEN_WORD_MAP = {
 }
 
 # These warrant a flag to the UI rather than silent replacement
-_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give", "move", "grasp"}
+_HARD_FORBIDDEN = {"inspect", "check", "examine", "manipulate", "adjust", "transfer", "handover", "give", "move", "grasp", "extend", "reach"}
 
 _VERB_ING_RE = re.compile(
     r"\b(pick(?:ing)?(?:\s+up)?|plac|fold|smooth(?:en)?|grip|hold|rotat|flip|tuck|flatten|align|loosen|tighten|push|pull|press|twist|squeez|pinch|assembl|apply)ing\b",
@@ -508,6 +547,68 @@ def _cut_video_clip(video_path: str, start_s: float, end_s: float) -> str | None
 
 # ── CV hand trajectory analysis ───────────────────────────────────────────────
 
+def _grip_state(pts: np.ndarray) -> str:
+    """Classify grip from 21 landmark pixel coordinates → 'open'|'grip'|'pinch'."""
+    palm      = pts[[0, 1, 5, 9, 13, 17]].mean(axis=0)
+    hand_size = np.linalg.norm(pts[0] - pts[9]) + 1e-6
+    pinch_d   = np.linalg.norm(pts[4] - pts[8]) / hand_size
+    if pinch_d < 0.35:
+        return "pinch"
+    tips   = pts[[4, 8, 12, 16, 20]]
+    spread = float(np.mean(np.linalg.norm(tips - palm, axis=1))) / hand_size
+    return "grip" if spread < 0.55 else "open"
+
+
+def _detect_hands_mediapipe(imgs: list) -> list[dict]:
+    """Run MediaPipe HandLandmarker (Tasks API) on BGR frames.
+    Returns one dict per frame: {'left': {...}|None, 'right': {...}|None}
+    """
+    empty = [{"left": None, "right": None} for _ in imgs]
+    if not _MEDIAPIPE_AVAILABLE or not imgs:
+        return empty
+
+    lm = _get_hand_landmarker()
+    if lm is None:
+        return empty
+
+    results = []
+    for img in imgs:
+        h, w = img.shape[:2]
+        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
+                          data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        res = lm.detect(mp_img)
+        det = {"left": None, "right": None}
+        if res.hand_landmarks and res.handedness:
+            for lm_list, handedness in zip(res.hand_landmarks, res.handedness):
+                side = handedness[0].category_name.lower()
+                pts  = np.array([[l.x * w, l.y * h] for l in lm_list])
+                wrist = (int(pts[0, 0]), int(pts[0, 1]))
+                pad   = int(max(pts[:, 0].ptp(), pts[:, 1].ptp()) * 0.3)
+                x1 = max(0, int(pts[:, 0].min()) - pad)
+                y1 = max(0, int(pts[:, 1].min()) - pad)
+                x2 = min(w, int(pts[:, 0].max()) + pad)
+                y2 = min(h, int(pts[:, 1].max()) + pad)
+                det[side] = {"wrist": wrist, "bbox": (x1, y1, x2, y2),
+                             "grip": _grip_state(pts)}
+        results.append(det)
+    return results
+
+
+def _grip_transition(grips: list) -> str:
+    """Summarise grip state across a segment → 'open→grip'|'grip→open'|'grip'|'open'|'pinch'|'unknown'."""
+    valid = [g for g in grips if g is not None]
+    if not valid:
+        return "unknown"
+    half  = max(1, len(valid) // 2)
+    first = max(set(valid[:half]),  key=valid[:half].count)  if valid[:half]  else valid[0]
+    last  = max(set(valid[half:]),  key=valid[half:].count)  if valid[half:]  else valid[-1]
+    if first == "open" and last == "grip":
+        return "open→grip"
+    if first == "grip" and last == "open":
+        return "grip→open"
+    return last
+
+
 def _decode_b64_frame(b64: str):
     """Decode a base64 JPEG to a BGR numpy array. Returns None on failure."""
     try:
@@ -547,19 +648,30 @@ def _analyze_hand_trajectories(frames: list[dict]) -> dict:
         return base
 
     h, w = imgs[0].shape[:2]
-    mid_x   = w // 2
-    y_start = int(h * 0.35)   # hands live in the bottom 65%
-    bg_end  = int(h * 0.30)   # top 30% = background only (no hands)
+    bg_end  = int(h * 0.30)   # top 30% = background for shake compensation
+
+    # ── MediaPipe hand detection ───────────────────────────────────────────────
+    mp_dets = _detect_hands_mediapipe(imgs)
+    l_det_n = sum(1 for d in mp_dets if d["left"]  is not None)
+    r_det_n = sum(1 for d in mp_dets if d["right"] is not None)
+    use_mp  = (l_det_n + r_det_n) / (2 * len(imgs) + 1e-6) >= 0.40
+
+    # Grip transitions — primary semantic signal
+    l_grips  = [d["left"]["grip"]  if d["left"]  else None for d in mp_dets]
+    r_grips  = [d["right"]["grip"] if d["right"] else None for d in mp_dets]
+    l_grip_t = _grip_transition(l_grips)
+    r_grip_t = _grip_transition(r_grips)
 
     l_dys, l_dxs, r_dys, r_dxs = [], [], [], []
-    # 90th-percentile magnitude per frame-pair (catches fine localised motion)
     l_p90s, r_p90s = [], []
+
+    mid_x   = w // 2
+    y_start = int(h * 0.35)
 
     for i in range(len(imgs) - 1):
         g1 = cv2.cvtColor(imgs[i],     cv2.COLOR_BGR2GRAY)
         g2 = cv2.cvtColor(imgs[i + 1], cv2.COLOR_BGR2GRAY)
 
-        # Two-pass optical flow: coarse (large winsize) + fine (small winsize)
         flow_c = cv2.calcOpticalFlowFarneback(
             g1, g2, None, pyr_scale=0.5, levels=3, winsize=15,
             iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
@@ -568,37 +680,63 @@ def _analyze_hand_trajectories(frames: list[dict]) -> dict:
             g1, g2, None, pyr_scale=0.5, levels=3, winsize=7,
             iterations=5, poly_n=5, poly_sigma=1.1, flags=0,
         )
-        # Blend: fine flow for small motions, coarse for large ones
         mag_c = np.sqrt(flow_c[..., 0]**2 + flow_c[..., 1]**2)
-        blend = np.clip(mag_c / 3.0, 0, 1)[..., np.newaxis]   # 0→fine, 1→coarse
+        blend = np.clip(mag_c / 3.0, 0, 1)[..., np.newaxis]
         flow  = flow_f * (1 - blend) + flow_c * blend
 
-        # Shake compensation from BACKGROUND ONLY (top 30%, no hands in view)
-        bg = flow[:bg_end, :]
+        bg   = flow[:bg_end, :]
         g_dx = float(np.median(bg[..., 0])) if bg_end > 0 else 0.0
         g_dy = float(np.median(bg[..., 1])) if bg_end > 0 else 0.0
 
-        hz = flow[y_start:, :]   # hand zone
-
         def wmean(zone, axis):
-            """Magnitude-weighted mean — focuses on pixels that moved most."""
             mag = np.sqrt(zone[..., 0]**2 + zone[..., 1]**2) + 1e-6
             return float(np.sum(zone[..., axis] * mag) / np.sum(mag))
 
         def p90mag(zone):
-            """90th-percentile magnitude — catches fine localised hand motion."""
             mags = np.sqrt(zone[..., 0]**2 + zone[..., 1]**2)
             return float(np.percentile(mags, 90))
 
-        lz = hz[:, :mid_x]
-        rz = hz[:, mid_x:]
+        def hand_zone(det_entry):
+            """Return the flow sub-region for a detected hand bbox, or None."""
+            if det_entry and det_entry.get("bbox"):
+                x1, y1, x2, y2 = det_entry["bbox"]
+                if y2 > y1 and x2 > x1:
+                    return flow[y1:y2, x1:x2]
+            return None
 
-        l_dys.append(wmean(lz, 1) - g_dy)
-        l_dxs.append(wmean(lz, 0) - g_dx)
-        r_dys.append(wmean(rz, 1) - g_dy)
-        r_dxs.append(wmean(rz, 0) - g_dx)
-        l_p90s.append(p90mag(lz))
-        r_p90s.append(p90mag(rz))
+        if use_mp:
+            # ── MediaPipe path: wrist velocity + bbox optical flow ─────────────
+            d1, d2 = mp_dets[i], mp_dets[i + 1]
+
+            def wrist_vel(side):
+                w1 = d1[side]["wrist"] if d1[side] else None
+                w2 = d2[side]["wrist"] if d2[side] else None
+                if w1 and w2:
+                    return float(w2[1] - w1[1]) - g_dy, float(w2[0] - w1[0]) - g_dx
+                return None, None
+
+            l_dy_mp, l_dx_mp = wrist_vel("left")
+            r_dy_mp, r_dx_mp = wrist_vel("right")
+
+            # Targeted optical flow inside hand bounding box for p90
+            lz_mp = hand_zone(d1["left"])
+            rz_mp = hand_zone(d1["right"])
+
+            if l_dy_mp is not None:
+                l_dys.append(l_dy_mp); l_dxs.append(l_dx_mp)
+            if r_dy_mp is not None:
+                r_dys.append(r_dy_mp); r_dxs.append(r_dx_mp)
+            l_p90s.append(p90mag(lz_mp) if lz_mp is not None and lz_mp.size > 0 else 0.0)
+            r_p90s.append(p90mag(rz_mp) if rz_mp is not None and rz_mp.size > 0 else 0.0)
+
+        else:
+            # ── Fallback: crude frame-halving optical flow ─────────────────────
+            hz  = flow[y_start:, :]
+            lz  = hz[:, :mid_x]
+            rz  = hz[:, mid_x:]
+            l_dys.append(wmean(lz, 1) - g_dy); l_dxs.append(wmean(lz, 0) - g_dx)
+            r_dys.append(wmean(rz, 1) - g_dy); r_dxs.append(wmean(rz, 0) - g_dx)
+            l_p90s.append(p90mag(lz)); r_p90s.append(p90mag(rz))
 
     # ── Thresholds ────────────────────────────────────────────────────────────
     PASSIVE      = 0.5    # px/frame — below this the zone is stationary (lowered for fine motions)
@@ -699,11 +837,29 @@ def _analyze_hand_trajectories(frames: list[dict]) -> dict:
             return "reposition", 0.65, net_dy, net_dx
         return "hold", 0.55, net_dy, net_dx
 
-    l_act, l_conf, l_dy, l_dx = classify_zone(l_dys, l_dxs, l_p90s)
-    r_act, r_conf, r_dy, r_dx = classify_zone(r_dys, r_dxs, r_p90s)
+    def classify_with_grip(dys, dxs, p90s, grip_t):
+        """classify_zone augmented with MediaPipe grip-transition signal."""
+        act, conf, dy, dx = classify_zone(dys, dxs, p90s)
+        if not use_mp or grip_t == "unknown":
+            return act, conf, dy, dx
+        # Grip transition overrides when it contradicts low-confidence velocity result
+        if grip_t == "open→grip" and act not in ("pick up",):
+            boost = 0.88 if conf < 0.80 else conf
+            return "pick up", boost, dy, dx
+        if grip_t == "grip→open" and act not in ("place",):
+            boost = 0.88 if conf < 0.80 else conf
+            return "place", boost, dy, dx
+        if grip_t == "grip" and act == "hold":
+            return "hold", max(conf, 0.82), dy, dx
+        if grip_t == "pinch" and act not in ("pick up", "place"):
+            return "reposition", max(conf, 0.70), dy, dx
+        return act, conf, dy, dx
 
-    l_mag = float(np.hypot(np.mean(l_dys), np.mean(l_dxs)))
-    r_mag = float(np.hypot(np.mean(r_dys), np.mean(r_dxs)))
+    l_act, l_conf, l_dy, l_dx = classify_with_grip(l_dys, l_dxs, l_p90s, l_grip_t)
+    r_act, r_conf, r_dy, r_dx = classify_with_grip(r_dys, r_dxs, r_p90s, r_grip_t)
+
+    l_mag = float(np.hypot(np.mean(l_dys) if l_dys else 0, np.mean(l_dxs) if l_dxs else 0))
+    r_mag = float(np.hypot(np.mean(r_dys) if r_dys else 0, np.mean(r_dxs) if r_dxs else 0))
 
     same_dir = (
         (l_act in ("pick up", "place") and (l_dy * r_dy) > 0)
@@ -716,51 +872,63 @@ def _analyze_hand_trajectories(frames: list[dict]) -> dict:
     )
 
     return {
-        "left_action": l_act,    "right_action": r_act,
-        "left_dy": l_dy,         "right_dy": r_dy,
-        "left_dx": l_dx,         "right_dx": r_dx,
-        "left_magnitude": l_mag, "right_magnitude": r_mag,
+        "left_action": l_act,       "right_action": r_act,
+        "left_dy": l_dy,            "right_dy": r_dy,
+        "left_dx": l_dx,            "right_dx": r_dx,
+        "left_magnitude": l_mag,    "right_magnitude": r_mag,
+        "left_grip": l_grip_t,      "right_grip": r_grip_t,
         "cv_confidence": (l_conf + r_conf) / 2,
         "both_hands": both,
         "n_frames": len(imgs),
+        "mediapipe_used": use_mp,
+        "mp_detection_rate": round((l_det_n + r_det_n) / (2 * len(imgs) + 1e-6), 2),
     }
 
 
 def _build_cv_block(cv: dict) -> str:
-    """
-    Format CV trajectory analysis as an authoritative block to inject into LLM prompts.
-    When confidence >= 70%, action verbs become binding constraints for the LLM.
-    """
     conf  = cv["cv_confidence"]
     level = "HIGH" if conf >= 0.80 else "MODERATE" if conf >= 0.65 else "LOW"
+    mp_tag = f"MediaPipe {cv.get('mp_detection_rate', 0):.0%} detection" if cv.get("mediapipe_used") else "optical flow zones"
 
-    def hand_line(side, action, dy, dx):
-        mag_s = f"dy={dy:+.1f} dx={dx:+.1f} px/frame"
-        arrows = {"pick up": "↑ UPWARD motion", "place": "↓ DOWNWARD motion",
-                  "hold": "· NO large vertical motion (may still be active manipulation)",
-                  "reposition": "↔ LATERAL motion"}
-        return f"  {side.upper():5s} hand: {arrows.get(action, action)} ({mag_s}) → {action}"
+    _ARROWS = {
+        "pick up":    "↑ UPWARD motion",
+        "place":      "↓ DOWNWARD motion",
+        "hold":       "· NO large vertical motion (may still be active manipulation)",
+        "reposition": "↔ LATERAL/fine motion",
+    }
+    _GRIP_LABELS = {
+        "open→grip": "open→grip ✊ (grasping)",
+        "grip→open": "grip→open ✋ (releasing)",
+        "grip":      "grip ✊ (holding)",
+        "open":      "open ✋",
+        "pinch":     "pinch 🤏 (fine manipulation)",
+        "unknown":   "",
+    }
+
+    def hand_line(side, action, dy, dx, grip_t):
+        motion = _ARROWS.get(action, action)
+        grip_s = _GRIP_LABELS.get(grip_t, "")
+        grip_part = f" | grip: {grip_s}" if grip_s else ""
+        return f"  {side.upper():5s} hand: {motion} (dy={dy:+.1f} dx={dx:+.1f}){grip_part} → {action}"
 
     lines = [
-        f"━━━ CV OPTICAL FLOW ANALYSIS ({level} confidence {conf:.0%}, n={cv['n_frames']} frames) ━━━",
-        "  Detects DIRECTION of hand motion only — NOT semantic actions (fold, cut, smooth, etc.).",
-        hand_line("left",  cv["left_action"],  cv["left_dy"],  cv["left_dx"]),
-        hand_line("right", cv["right_action"], cv["right_dy"], cv["right_dx"]),
+        f"━━━ CV HAND ANALYSIS ({level} confidence {conf:.0%}, {mp_tag}, n={cv['n_frames']} frames) ━━━",
+        "  Detects hand motion direction and grip — NOT semantic actions (fold, cut, smooth, etc.).",
+        hand_line("left",  cv["left_action"],  cv["left_dy"],  cv["left_dx"],  cv.get("left_grip",  "unknown")),
+        hand_line("right", cv["right_action"], cv["right_dy"], cv["right_dx"], cv.get("right_grip", "unknown")),
     ]
     if cv["both_hands"]:
-        lines.append("  Both zones show matching motion → 'with both hands' is appropriate.")
+        lines.append("  Both hands show matching motion → 'with both hands' is appropriate.")
 
     if conf >= 0.80:
         lines += [
             "",
-            "⚠ CONSTRAINT (conf ≥80%): If CV shows UPWARD motion → label must include 'pick up'.",
-            "  If CV shows DOWNWARD motion → label must include 'place'.",
-            "  CV 'hold' / 'reposition' = no strong vertical motion detected — you MUST still label",
-            "  any semantic manipulation you see (fold, cut, smoothen, adjust, etc.).",
-            "  CV does NOT detect semantic actions — only use it to resolve pick up vs place.",
+            "⚠ CONSTRAINT (conf ≥80%): grip transition and motion direction are reliable.",
+            "  open→grip + upward = pick up | grip→open + downward = place",
+            "  'hold'/'reposition' from CV = no strong vertical motion — label the semantic action you see.",
         ]
     else:
-        lines.append("NOTE: CV confidence below 80% — use as a directional hint only, not a constraint.")
+        lines.append("NOTE: CV confidence below 80% — treat as a hint only, not a constraint.")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines) + "\n\n"
