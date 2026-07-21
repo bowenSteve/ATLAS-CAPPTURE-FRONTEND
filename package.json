@@ -1,6 +1,6 @@
 {
   "name": "atlas-capture-tool",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Atlas Capture Video Annotation Tool",
   "main": "electron/main.js",
   "scripts": {
