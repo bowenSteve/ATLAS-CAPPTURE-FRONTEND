@@ -101,6 +101,32 @@ ipcMain.handle("install-update", () => {
   autoUpdater.quitAndInstall();
 });
 
+// ── Detect objects ───────────────────────────────────────────────────────────
+ipcMain.handle("detect-objects", async (_, { videoPath, apiKey, model, apiUrl }) => {
+  const isWin = process.platform === "win32";
+  const scriptArgs = ["--mode", "detect_objects", "--video", videoPath,
+                      "--api-key", apiKey, "--model", model, "--api-url", apiUrl];
+  let proc;
+  if (isDev) {
+    const pyScript = path.join(__dirname, "../process_video.py");
+    const venvPython = process.env.VIRTUAL_ENV ? path.join(process.env.VIRTUAL_ENV, "bin", "python3") : null;
+    proc = spawn(isWin ? "python" : (venvPython || "python3"), [pyScript, ...scriptArgs], { env: { ...process.env } });
+  } else if (isWin) {
+    proc = spawn(path.join(process.resourcesPath, "process_video.exe"), scriptArgs, { env: { ...process.env } });
+  } else {
+    proc = spawn("python3", [path.join(process.resourcesPath, "process_video.py"), ...scriptArgs], { env: { ...process.env } });
+  }
+  return new Promise((resolve) => {
+    let result = { objects: [] };
+    proc.stdout.on("data", (chunk) => {
+      for (const line of chunk.toString().split("\n").filter(Boolean)) {
+        try { const p = JSON.parse(line); if (p.event === "done") result = p; } catch {}
+      }
+    });
+    proc.on("close", () => resolve(result));
+  });
+});
+
 // ── Run process_video.py ─────────────────────────────────────────────────────
 const runningAnnotations = new Map(); // annotationId -> { proc, cancelled }
 

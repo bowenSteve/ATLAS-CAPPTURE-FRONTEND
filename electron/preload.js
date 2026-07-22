@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("electron", {
   getConfig: () => ipcRenderer.invoke("get-config"),
   saveConfig: (cfg) => ipcRenderer.invoke("save-config", cfg),
   runAnnotation: (args) => ipcRenderer.invoke("run-annotation", args),
+  detectObjects: (args) => ipcRenderer.invoke("detect-objects", args),
   cancelAnnotation: (annotationId) => ipcRenderer.invoke("cancel-annotation", annotationId),
   onProgress: (cb) => ipcRenderer.on("annotation-progress", (_, data) => cb(data)),
   removeProgressListener: () => ipcRenderer.removeAllListeners("annotation-progress"),

@@ -39,8 +39,10 @@ export default function Annotate() {
   const [partialSegments, setPartialSegments] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [cancelling, setCancelling] = useState(false);
+  const [objects, setObjects] = useState([]);
   const annotationIdRef = useRef(null);
   const errorHandledRef = useRef(false);
+  const sessionDataRef = useRef(null);
 
   function copySegment(seg) {
     navigator.clipboard.writeText(seg.label).then(() => {
@@ -80,6 +82,17 @@ export default function Annotate() {
       sessionData = await startAnnotation(videoName, tier, context);
       setCredits(sessionData.credits_remaining);
       annotationIdRef.current = sessionData.annotation_id;
+      sessionDataRef.current = sessionData;
+
+      // Fire object detection immediately in parallel — don't await
+      window.electron.detectObjects({
+        videoPath,
+        apiKey: sessionData.openrouter_api_key,
+        model: sessionData.openrouter_model,
+        apiUrl: sessionData.openrouter_base_url,
+      }).then((r) => {
+        if (r?.objects?.length) setObjects(r.objects);
+      }).catch(() => {});
     } catch (err) {
       setPhase("error");
       setErrorMsg(err.response?.data?.detail || err.message);
@@ -180,6 +193,7 @@ export default function Annotate() {
     setPartialSegments([]);
     setScreenshots([]);
     setCancelling(false);
+    setObjects([]);
   }
 
   const selectedTier = TIERS.find((t) => t.id === tier);
@@ -446,6 +460,30 @@ export default function Annotate() {
 
       {phase === "done" && result && (
         <div>
+          {/* Objects identified section */}
+          <div className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 mb-4">
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 10V11" />
+              </svg>
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Objects in this video</span>
+            </div>
+            {objects.length === 0 ? (
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full border-2 border-gray-300 dark:border-gray-600 border-t-indigo-500 animate-spin" />
+                <span className="text-xs text-gray-400">Identifying objects…</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {objects.map((obj) => (
+                  <span key={obj} className="inline-flex items-center px-2.5 py-1 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-xs text-gray-700 dark:text-gray-300 font-medium">
+                    {obj}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 rounded-2xl p-4 mb-5">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-indigo-600 flex items-center justify-center shrink-0">

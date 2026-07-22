@@ -26,24 +26,30 @@ import threading
 import cv2
 import numpy as np
 import requests
-try:
-    import mediapipe as mp
-    from mediapipe.tasks import python as _mp_python
-    from mediapipe.tasks.python import vision as _mp_vision
-    _MEDIAPIPE_AVAILABLE = True
-except ImportError:
-    _MEDIAPIPE_AVAILABLE = False
-
 _HAND_MODEL_URL  = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 _HAND_MODEL_PATH = os.path.join(os.path.expanduser("~"), ".cache", "atlas_capture", "hand_landmarker.task")
 _hand_landmarker = None  # cached singleton
+_MEDIAPIPE_AVAILABLE = None  # None = not yet checked
 
 def _get_hand_landmarker():
-    global _hand_landmarker
+    global _hand_landmarker, _MEDIAPIPE_AVAILABLE
     if _hand_landmarker is not None:
         return _hand_landmarker
-    if not _MEDIAPIPE_AVAILABLE:
+    if _MEDIAPIPE_AVAILABLE is False:
         return None
+    # Lazy import — only triggered when annotation actually needs hand detection
+    if _MEDIAPIPE_AVAILABLE is None:
+        try:
+            import mediapipe as mp  # noqa: F401 — stored in globals for detect fn
+            from mediapipe.tasks import python as _mp_python_mod
+            from mediapipe.tasks.python import vision as _mp_vision_mod
+            globals()["mp"] = mp
+            globals()["_mp_python"] = _mp_python_mod
+            globals()["_mp_vision"] = _mp_vision_mod
+            _MEDIAPIPE_AVAILABLE = True
+        except ImportError:
+            _MEDIAPIPE_AVAILABLE = False
+            return None
     if not os.path.exists(_HAND_MODEL_PATH):
         os.makedirs(os.path.dirname(_HAND_MODEL_PATH), exist_ok=True)
         try:
@@ -52,6 +58,8 @@ def _get_hand_landmarker():
         except Exception:
             return None
     try:
+        _mp_python = globals()["_mp_python"]
+        _mp_vision = globals()["_mp_vision"]
         opts = _mp_vision.HandLandmarkerOptions(
             base_options=_mp_python.BaseOptions(model_asset_path=_HAND_MODEL_PATH),
             running_mode=_mp_vision.RunningMode.IMAGE,
@@ -207,9 +215,10 @@ Tool use format: "[action] [object] with [tool] in [hand]"
 
 Instead of "adjust" → shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
 
-Instead of "manipulate" → grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
-  ✓ work dough with both hands   ✓ grip storage cart with both hands
+Instead of "manipulate" → hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+  ✓ work dough with both hands   ✓ hold storage cart with both hands
   Pick the specific action — if unclear, use "work [object]" as last resort
+  Do NOT use "grip" as a standalone verb — "grip" is a physical state, not an action label
 
 Instead of "move" → "reposition" (within same location) or "carry" (between locations)
 Instead of "transfer" → use "pick up" and "place"
@@ -278,88 +287,142 @@ First segment starts at the first frame timestamp. Last segment ends at the last
 
 
 LABELING_SYSTEM_PROMPT = """
-You are an expert labeler for egocentric (first-person) video footage captured by a wearable camera.
+You are an expert labeler for egocentric (first-person) video footage following the Atlas Capture Labeling Workshop standard.
 
-You will receive:
-1. A sequence of video frames with timestamps burned in (HH:MM:SS format)
-2. A list of pre-defined segments with fixed start and end times
+You will receive video frames and a list of pre-defined segments with fixed timestamps.
+Your ONLY task: write the correct action label for each segment based on what you observe.
+Timestamps are FIXED — do NOT change them or invent new segments. Output EXACTLY the same number of segments given.
 
-Your ONLY task: write the correct action label for each pre-defined segment, based on what you observe in the video frames for that time window. The timestamps are fixed — do NOT change them or invent new segments. Output EXACTLY the same number of segments as given.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 0 — CORE MENTAL MODEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A segment = one continuous hand-object interaction toward a single goal.
+• Segment boundaries are FIXED — you only write the label text; never change timestamps.
+• Every word of the label must be true for the ENTIRE given segment window.
+• No hand-object interaction → "No Action".
+PRIORITY IS ACCURACY — only describe what is visible.
 
-━━━━━━━━━━━━━━━━━━━━━━━━
-WHAT TO LABEL
-━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Goal-oriented hand-object actions
-✓ Both left and right hand usage during interactions
-✓ Holding MANIPULATABLE objects (e.g. "hold cup with left hand, wipe cup with cloth in right hand")
-✓ Object exchanges between hands (e.g. "pass towel in right hand to left hand")
-
-✗ Do NOT label: walking/navigation, looking/checking, idle gestures, camera or face touches
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — WHAT TO LABEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Goal-oriented hand-object actions relevant to the task
+✓ Left-hand and right-hand usage during hand-object interactions
+✓ Object transfers between hands (these MUST be labelled)
+✗ Do NOT label: walking/navigation, looking/inspecting/checking, idle gestures, camera or face touches, irrelevant side actions, incidental micro-movements
 ✗ Do NOT label holding large stationary objects (tables, walls)
 
-━━━━━━━━━━━━━━━━━━━━━━━━
-LABEL FORMAT
-━━━━━━━━━━━━━━━━━━━━━━━━
-1. IMPERATIVE VOICE — write as a command
-   ✓ pick up spoon with right hand
-   ✗ the spoon is picked with right hand
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — LABEL FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• IMPERATIVE VOICE — write as commands, never -ing or passive:
+    ✓ "pick up spoon with right hand"
+    ✗ "picking up spoon"   ✗ "the spoon is picked with right hand"
 
-2. DUAL-HAND FORMAT — always label both hands separately, even when one hand is passive.
-   The non-dominant hand is almost always "hold [object] with [left/right] hand".
-   ✓ hold blue wire with left hand, cut wire with shears in right hand
-   ✓ hold sponge with left hand, pick up plate with right hand
-   Only use "with both hands" when both hands perform identical, symmetrical actions:
-   ✓ twist wire with both hands   ✓ fold towel with both hands
-   NEVER collapse two separate hand actions into a generic "with both hands" label.
+• ALWAYS SPECIFY THE HAND for every action: "with left hand", "with right hand", or "with both hands".
+    ✓ "pick up cup with left hand, place cup on table with left hand"
+    ✗ "pick up cup, place cup on table"  (no hand specified)
 
-3. 1-3 ATOMIC ACTIONS per segment, separated by comma
-   ✓ hold wire with left hand, pick up shears with right hand
-   ✓ hold cup with left hand, place cup on table with right hand
+• A held tool → "in <hand>", the acted-on object → "with <hand>":
+    ✓ "hold cup with left hand, wipe cup with cloth in right hand"
 
-4. Under 20 words; all words must be true for the ENTIRE segment duration
+• Separate atomic actions with comma:
+    ✓ "hold wire with left hand, pick up shears with right hand"
 
-5. DO NOT label intent — label what is actually happening
-   ✓ cut tape with scissors with right hand
-   ✗ pick up scissors to cut tape with right hand
+• No articles (the/a/an): ✓ "pick up spoon"  ✗ "pick up the spoon"
+• No pronouns (it/them/they) — repeat the object name instead
+• No numerals — spell out or use collective plural:
+    ✗ "pick up 3 knives"  ✓ "pick up knives"  ✓ "pick up three knives"
+• No intent — label what happens, not why:
+    ✓ "cut tape with scissors with right hand"  ✗ "pick up scissors to cut tape"
 
-━━━━━━━━━━━━━━━━━━━━━━━━
-VERB RULES
-━━━━━━━━━━━━━━━━━━━━━━━━
-Object leaves any surface → "pick up"  (NEVER: pick, take, grasp — all forbidden)
-Tool use format: "[action] [object] with [tool] in [hand]"
-  ✓ wipe cup with cloth in right hand   ✗ wipe cup with cloth with right hand
-Object carried between locations → "carry [item] from [A]" + "place [item] on [B]" in same segment
-Object contacts surface/object → "place [item] on [destination]"  (destination = actual surface or object)
-  ✓ place lid on container   ✓ place cup on table   ✗ place cup down
-Lid removal → "pull [lid] off [object]"  |  Lid attachment → "press [lid] onto [object]"
-Button/switch → "press [button name]"
-Object moved within same area → "reposition"
-Object hand-off → hand over, put, pass, switch, set  (NOT: transfer, handover, give)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — DENSE vs COARSE (choose exactly ONE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DENSE is PREFERRED. Use whenever actions are clearly identifiable:
+  • Detailed and specific — exact actions, objects, and micro-actions
+  ✓ "pick up shirt with right hand, smoothen shirt with right hand"
+  ✓ "pick up flat iron with left hand, iron shirt with flat iron in left hand"
 
-PARALLEL DUAL-HAND: same action on different objects simultaneously → list each hand separately:
-  ✓ pick up black bottle with right hand, pick up white bottle with left hand
-  ✗ pick up black and white bottles with both hands
+COARSE only when dense is IMPOSSIBLE — too many micro-actions for the segment duration:
+  • Main goal/objective only, no micro-actions, still names the tool
+  ✓ "smoothen shirt with flat iron in right hand"
+
+Do NOT mix dense and coarse in one label. When in doubt, prefer dense.
+There is NO word limit — a label must fully and accurately cover the entire fixed segment window.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — VERB RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Object leaves a surface → "pick up"  (NEVER: pick / take / grasp)
+• Object contacts a surface → "place [object] on [destination]"  — always include destination:
+    ✓ "place cup on table"   ✓ "place lid on container"   ✗ "place cup down"
+• Relocating within scene → "reposition"
+• Tool use: "[action] [object] with [tool] in [hand]"
+    ✓ "wipe cup with cloth in right hand"
+• Lid removal → "pull [lid] off [object]"  |  Lid attachment → "press [lid] onto [object]"
+• Button/switch → "press [button name]"
+• Object exchanges between hands → hand over, put, pass, switch, set  (NOT: transfer, handover, give)
+• Instead of "adjust" → shift, reposition, center, align, level, tilt, slide, rotate, unfold, fold, tuck, flatten, straighten, smoothen, tighten, loosen
+• Instead of "manipulate" → hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+  (do NOT use "grip" as a standalone action verb — use "hold" for passive holding)
+• Instead of "move / transfer" → "pick up" + "place", or "reposition"
+• Adjacent/synonym verbs are acceptable when they correctly describe the observed action.
+• Generic equivalents are acceptable for technical items where precise name is not identifiable.
+• Do NOT invent steps not visible in the frames.
+
+PARALLEL DUAL-HAND — same action on DIFFERENT objects simultaneously → list each hand separately:
+  ✓ "pick up black bottle with right hand, pick up white bottle with left hand"
+  ✗ "pick up black and white bottles with both hands"
 "with both hands" ONLY when both hands act on the SAME object together.
 
-Instead of "adjust" → shift, reposition, center, align, level, tilt, slide, rotate, unfold, turn, fold, tuck, flatten, straighten, smoothen, tighten, loosen
-Instead of "manipulate" → grip, hold, push, pull, press, work, twist, flip, squeeze, pinch, apply, assemble
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — NO ACTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use exactly "No Action" ONLY when:
+  • Hands touch nothing for MORE THAN 5 seconds, OR
+  • Ego is idle/irrelevant for MORE THAN 5 seconds.
+Do NOT combine "No Action" with a real action in one label.
+Minor idle time (5s or less) is absorbed into the adjacent action — do not split for it.
 
-NO ACTION: only when hands touch nothing AND ego is idle for the ENTIRE segment duration (more than 5s with no hand-object contact).
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — OBJECTS & DESCRIPTORS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Only name what you can defend visually. NEVER use "tool", "object", "thing", "item".
+  If unsure, describe by visual properties: "silver hex wrench", "red-handled screwdriver", "yellow spray can"
+• Use the task context to infer domain-specific names (tools, components, materials)
+• HOLD: label holding MANIPULATABLE objects; do NOT label holding large stationary objects:
+    ✓ "hold pillow with left hand, wipe shelf with cloth in right hand"
+    ✗ "hold table with left hand, wipe table…"  (table is stationary)
+• Descriptors required only to disambiguate similar objects:
+    ✓ "blue cloth" vs "white cloth"; otherwise keep simple: "pick up cloth with left hand"
+• Position words (left/right/upper/bottom) describe the OBJECT only, never confuse with acting hand:
+    ✓ "hold shoe with left hand, scrub bottom of shoe with brush in right hand"
+• Multiple identical objects at once → collective plural ("pick up knives", not "pick up 3 knives")
+• Multiple different objects held → list them ("hold pliers and hammer with right hand")
 
-━━━━━━━━━━━━━━━━━━━━━━━━
-FORBIDDEN WORDS
-━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORBIDDEN WORDS — never use these
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 adjust, manipulate, move, transfer, inspect, check, examine, reach, extend
 pick (alone), take, grasp, handover, give
-Instead of "extend hand toward" / "reach for" → pick up
 it, them, they  (use the object name)
 -ing form of any verb  (fold not folding, smoothen not smoothening, pick up not picking up)
 the, a, an  (no articles)
 tool, object, thing, item
 
-━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — IDEAL LABEL CHECKLIST (run before finalizing each label)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Full action coverage for the ENTIRE fixed segment (no missed pick up or place)
+✓ Accurate verbs attached to clear objects — synonyms fine if correct; generic names fine for hard-to-identify items
+✓ The hand is specified for EVERY action
+✓ No hallucinated steps, no incidental micro-movements labelled
+✓ Dense (preferred) or coarse (only if dense is genuinely impossible) — never mixed
+✓ No forbidden words, articles, pronouns, -ing verbs, or numerals
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT — valid JSON only, no extra text
-━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "segments": [
     {
@@ -440,6 +503,59 @@ def _sanitize_label(label: str) -> tuple[str, list[str]]:
     cleaned = re.sub(r"  +", " ", cleaned).strip()
 
     return cleaned, warnings
+
+
+_LINT_FORBIDDEN = {
+    "adjust", "manipulate", "move", "transfer", "inspect", "check",
+    "examine", "reach", "extend", "pick", "take", "grasp",
+    "handover", "give", "tool", "object", "thing", "item",
+}
+_LINT_ING_RE = re.compile(r"\b\w+ing\b", re.IGNORECASE)
+_LINT_ARTICLE_RE = re.compile(r"\b(the|a|an)\b", re.IGNORECASE)
+_LINT_NUMERAL_RE = re.compile(r"\b\d+\b")
+_LINT_PRONOUN_RE = re.compile(r"\b(it|them|they)\b", re.IGNORECASE)
+_LINT_HAND_RE = re.compile(r"\b(left hand|right hand|both hands)\b", re.IGNORECASE)
+
+
+def lint_label(label: str) -> list[str]:
+    """Return a list of guideline-violation strings for the given label."""
+    issues = []
+    lower = label.lower().strip()
+
+    if lower in ("no action", ""):
+        return issues
+
+    # Forbidden words
+    words = re.findall(r"\b\w+\b", lower)
+    for w in words:
+        if w in _LINT_FORBIDDEN:
+            issues.append(f'forbidden word "{w}"')
+
+    # -ing verbs (exclude "No Action" and false positives like "ceiling", "ring")
+    action_words = re.findall(r"\b([a-z]+ing)\b", lower)
+    known_nouns_with_ing = {"ceiling", "ring", "spring", "string", "swing", "king", "thing", "ceiling", "wing"}
+    for w in action_words:
+        if w not in known_nouns_with_ing:
+            issues.append(f'"-ing" verb "{w}" — use base form')
+
+    # Articles
+    if _LINT_ARTICLE_RE.search(label):
+        issues.append("contains article (the/a/an)")
+
+    # Pronouns
+    m = _LINT_PRONOUN_RE.search(label)
+    if m:
+        issues.append(f'pronoun "{m.group()}" — use the object name')
+
+    # Numerals
+    if _LINT_NUMERAL_RE.search(label):
+        issues.append("contains numeral — spell out or use collective plural")
+
+    # Missing hand specification
+    if not _LINT_HAND_RE.search(label):
+        issues.append("missing hand specification (left hand / right hand / both hands)")
+
+    return issues
 
 
 def emit(event: str, **kwargs):
@@ -564,18 +680,22 @@ def _detect_hands_mediapipe(imgs: list) -> list[dict]:
     Returns one dict per frame: {'left': {...}|None, 'right': {...}|None}
     """
     empty = [{"left": None, "right": None} for _ in imgs]
-    if not _MEDIAPIPE_AVAILABLE or not imgs:
+    if not imgs:
         return empty
 
     lm = _get_hand_landmarker()
     if lm is None:
         return empty
 
+    _mp = globals().get("mp")
+    if _mp is None:
+        return empty
+
     results = []
     for img in imgs:
         h, w = img.shape[:2]
-        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
-                          data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        mp_img = _mp.Image(image_format=_mp.ImageFormat.SRGB,
+                           data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         res = lm.detect(mp_img)
         det = {"left": None, "right": None}
         if res.hand_landmarks and res.handedness:
@@ -1562,7 +1682,7 @@ def _build_motion_summary(seg_frames: list[dict]) -> str:
     return "\n".join(lines)
 
 
-TIER_MAX_FRAMES = {"basic": 6, "standard": 10, "premium": 14}
+TIER_MAX_FRAMES = {"basic": 6, "standard": 12, "premium": 16}
 
 CONSISTENCY_SYSTEM_PROMPT = """
 You are a quality controller for egocentric video action labels. You will receive a complete sequence of labeled segments. Your ONLY task is to fix inconsistencies — do NOT change labels that are already correct or rephrase them stylistically.
@@ -1636,6 +1756,8 @@ def _consistency_pass(segments: list, api_key: str, model: str,
                 label, warnings = _sanitize_label(fix.get("label", orig["label"]))
                 for w in warnings:
                     emit("log", message=f"Consistency pass seg {orig['id']}: {w}")
+                for issue in lint_label(label):
+                    emit("log", message=f"Consistency pass seg {orig['id']} lint: {issue} — '{label}'")
                 result.append({"id": orig["id"], "start": orig["start"], "end": orig["end"], "label": label})
             return result, tokens, 0.0
 
@@ -1821,8 +1943,8 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 "  - Articles present (the/a/an) → remove them\n"
                 "  - Multiple actions joined with 'and' → replace with ', ' (comma)\n"
                 "  - Label exceeds 20 words → shorten\n\n"
-                f"Return ONLY valid JSON with exactly 1 segment (include your confidence 1–5):\n"
-                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<corrected label>", "confidence": <1-5>}}]}}'
+                f"Return ONLY valid JSON with exactly 1 segment (include your confidence 1–5 and a notes field — one sentence on what you observed and why you kept or changed the label):\n"
+                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<corrected label>", "confidence": <1-5>, "notes": "<one sentence observation>"}}]}}'
             )
         else:
             task_text = (
@@ -1841,8 +1963,8 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 "DENSE labeling: this segment may contain 2–3 distinct atomic actions. Do NOT collapse into one generic verb.\n"
                 "Separate multiple actions with ', ' (comma) — never use 'and' between actions.\n"
                 "Do NOT default to 'fold towel' when uncertain — if the orientation changed but you cannot tell how, use 'rotate' or 'flip' based on the cues above.\n\n"
-                f"Return ONLY valid JSON with exactly 1 segment (include your confidence 1–5):\n"
-                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<label with hand specification>", "confidence": <1-5>}}]}}'
+                f"Return ONLY valid JSON with exactly 1 segment (include your confidence 1–5 and a notes field — one sentence on what you observed that led to this label):\n"
+                f'{{"segments": [{{"id": {seg_id}, "start": "{seg["start"]}", "end": "{seg["end"]}", "label": "<label with hand specification>", "confidence": <1-5>, "notes": "<one sentence observation>"}}]}}'
             )
 
         content = [{"type": "text", "text": task_text}]
@@ -1859,9 +1981,14 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
         out = output_segs[0] if output_segs else {}
         raw_label = out.get("label", "no action")
         confidence = int(out.get("confidence", 3))
+        notes = out.get("notes", "")
         label, warnings = _sanitize_label(raw_label)
         for w in warnings:
             emit("log", message=f"Segment {seg_id} ({seg['start']}→{seg['end']}): {w}")
+        for issue in lint_label(label):
+            emit("log", message=f"Segment {seg_id} lint: {issue} — '{label}'")
+        if notes:
+            emit("log", message=f"Segment {seg_id} notes: {notes}")
         if confidence <= 2:
             emit("warning", message=(
                 f"Segment {seg_id} ({seg['start']}→{seg['end']}): low confidence ({confidence}/5) — "
@@ -1871,14 +1998,16 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
             emit("log", message=f"Segment {seg_id} ({seg['start']}→{seg['end']}): moderate confidence ({confidence}/5) — '{label}'")
         label_map[seg_idx] = label
 
-        accumulated.append({"id": seg_idx + 1, "start": seg["start"], "end": seg["end"], "label": label, "confidence": confidence})
+        accumulated.append({"id": seg_idx + 1, "start": seg["start"], "end": seg["end"], "label": label, "confidence": confidence, "notes": notes})
         emit("partial_segments", segments=list(accumulated))
         emit("annotating_progress", chunks_done=seg_idx + 1, chunks_total=n_segs, from_cache=False)
 
-    conf_map = {s["id"] - 1: s.get("confidence", 3) for s in accumulated}
+    conf_map  = {s["id"] - 1: s.get("confidence", 3) for s in accumulated}
+    notes_map = {s["id"] - 1: s.get("notes", "")    for s in accumulated}
     merged = [
         {"id": i + 1, "start": ts["start"], "end": ts["end"],
-         "label": label_map.get(i, "no action"), "confidence": conf_map.get(i, 3)}
+         "label": label_map.get(i, "no action"), "confidence": conf_map.get(i, 3),
+         "notes": notes_map.get(i, "")}
         for i, ts in enumerate(timestamp_segments)
     ]
 
@@ -2059,6 +2188,8 @@ def call_llm(frames: list[dict], context: str, api_key: str, model: str,
             seg["label"], warnings = _sanitize_label(seg.get("label", ""))
             for w in warnings:
                 emit("log", message=f"Segment {seg_id}: {w}")
+            for issue in lint_label(seg["label"]):
+                emit("log", message=f"Segment {seg_id} lint: {issue} — '{seg['label']}'")
             all_segments.append(seg)
             seg_id += 1
         total_tokens += tokens
@@ -2067,8 +2198,49 @@ def call_llm(frames: list[dict], context: str, api_key: str, model: str,
     return all_segments, total_tokens, total_cost
 
 
+def _detect_objects_llm(video_path: str, api_key: str, model: str, base_url: str) -> list:
+    """Seek directly to 6 evenly-spaced timestamps and ask the LLM to list all visible objects."""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        fps_v = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+        duration = total_frames / fps_v
+        rotation = detect_rotation(video_path)
+        timestamps = [duration * i / 5 for i in range(6)]
+        sampled = [f for ts in timestamps for f in [_extract_one(video_path, ts, rotation)] if f]
+        if not sampled:
+            return []
+
+        content = [{"type": "text", "text": (
+            "These are frames from an egocentric (first-person) video of a person working on a task.\n"
+            "List every distinct physical object visible in the workspace across all frames.\n"
+            "Include tools, components, containers, and surfaces the person interacts with.\n"
+            "Return ONLY a JSON array of short lowercase names (2-4 words max). No explanation.\n"
+            'Example: ["scissors", "led ribbon", "white box", "black tape", "batteries", "table"]'
+        )}]
+        for f in sampled:
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
+
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
+                   "HTTP-Referer": "https://atlascapture.app", "X-Title": "Atlas Capture Tool"}
+        payload = {"model": model, "messages": [{"role": "user", "content": content}], "max_tokens": 300}
+
+        resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=45)
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        start = raw.find("[")
+        if start != -1:
+            objects = json.loads(raw[start:raw.rfind("]") + 1])
+            return [str(o).lower().strip() for o in objects if o]
+    except Exception:
+        pass
+    return []
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", default="annotate", choices=["annotate", "detect_objects"])
     parser.add_argument("--video", required=True)
     parser.add_argument("--tier", default="standard", choices=["basic", "standard", "premium"])
     parser.add_argument("--frames-per-sec", type=float, default=None)
@@ -2079,6 +2251,14 @@ def main():
     parser.add_argument("--annotation-id", type=int, default=None)
     parser.add_argument("--screenshots", nargs="*", default=[])
     args = parser.parse_args()
+
+    if args.mode == "detect_objects":
+        try:
+            objects = _detect_objects_llm(args.video, args.api_key, args.model, args.api_url)
+            emit("done", objects=objects)
+        except Exception as e:
+            emit("done", objects=[])
+        sys.exit(0)
 
     # Default frames per second per tier (overridable by backend setting)
     tier_defaults = {"basic": 2.0, "standard": 4.0, "premium": 8.0}
