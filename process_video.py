@@ -634,10 +634,10 @@ def _cut_video_clip(video_path: str, start_s: float, end_s: float) -> str | None
                 "-ss", str(start_s),
                 "-t",  str(duration),
                 "-i",  video_path,
-                "-vf", "scale=480:-2",
+                "-vf", "scale=640:-2",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
-                "-crf", "32",
+                "-crf", "30",
                 "-an",
                 "-movflags", "+faststart",
                 "-f", "mp4",
@@ -1121,6 +1121,8 @@ def _extract_json(text: str) -> dict:
                         return json.loads(candidate)
                     except json.JSONDecodeError:
                         break  # try next opening brace
+    preview = text[:300].replace("\n", " ") if text else "<empty>"
+    emit("log", message=f"[JSON] Parse failed. Raw response: {preview}")
     raise RuntimeError("LLM response contained no parseable JSON object")
 
 
@@ -1338,7 +1340,10 @@ def _call_label_batch_request(content: list, api_key: str, model: str,
             emit("stream_chars", chars=0)
             time.sleep(2 ** (attempt + 1))
     cost_usd = fetch_generation_cost(generation_id, api_key, base_url) if generation_id else 0.0
-    return _extract_json(raw_text).get("segments", []), tokens_used, cost_usd
+    try:
+        return _extract_json(raw_text).get("segments", []), tokens_used, cost_usd
+    except RuntimeError:
+        return [], tokens_used, cost_usd
 
 
 def _decode_frame(b64_str: str):
@@ -1793,6 +1798,22 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
     examples = _load_examples()
     few_shot_block = _build_few_shot_block(context, examples)
 
+    # Pre-cut all video clips in parallel before the segment loop.
+    # This avoids serial ffmpeg delays and lets us start LLM calls sooner.
+    if video_path and _FFMPEG_EXE:
+        emit("log", message=f"[VID] Pre-cutting {len(timestamp_segments)} video clips in parallel…")
+        _clip_workers = min(len(timestamp_segments), 4)
+        def _cut_one_seg(seg):
+            s = hms_to_seconds(seg["start"])
+            e = hms_to_seconds(seg["end"])
+            return _cut_video_clip(video_path, s, e)
+        with ThreadPoolExecutor(max_workers=_clip_workers) as _clip_pool:
+            _precut_clips = list(_clip_pool.map(_cut_one_seg, timestamp_segments))
+        ok = sum(1 for c in _precut_clips if c)
+        emit("log", message=f"[VID] {ok}/{len(timestamp_segments)} clips ready, {len(timestamp_segments)-ok} will fall back to frames")
+    else:
+        _precut_clips = [None] * len(timestamp_segments)
+
     def sample_frames_for_seg(seg: dict) -> list:
         start_s = hms_to_seconds(seg["start"])
         end_s = hms_to_seconds(seg["end"])
@@ -1833,8 +1854,25 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
         start_s = hms_to_seconds(seg["start"])
         end_s   = hms_to_seconds(seg["end"])
 
-        # Try native video clip first (ffmpeg); fall back to extracted frames
-        clip_b64 = _cut_video_clip(video_path, start_s, end_s) if video_path else None
+        # Use pre-cut clip (may be None if ffmpeg failed for this segment)
+        clip_b64 = _precut_clips[seg_idx]
+
+        # Drop clips that are too large — keeps request size manageable
+        _CLIP_MAX_BYTES = 1_600_000  # ~1.6 MB base64 (covers ≤12s at 640p CRF 30)
+        if clip_b64 and len(clip_b64) > _CLIP_MAX_BYTES:
+            emit("log", message=f"[VID] Seg {seg_id}: clip {len(clip_b64)//1024}KB exceeds limit, falling back to frames")
+            clip_b64 = None
+
+        # Pre/post boundary context frames from the global frame pool
+        # Only include when sending a clip — skip for frame-only path (would be redundant)
+        if clip_b64:
+            pre_ctx_frames  = [f for f in frames if f["timestamp"] < start_s][-2:]
+            post_ctx_frames = [f for f in frames if f["timestamp"] > end_s][:1]
+            emit("log", message=f"[VID] Seg {seg_id}: video clip ({end_s-start_s:.1f}s, {len(clip_b64)//1024}KB) + {len(pre_ctx_frames)} pre + {len(post_ctx_frames)} post ctx frames")
+        else:
+            pre_ctx_frames  = []
+            post_ctx_frames = []
+            emit("log", message=f"[VID] Seg {seg_id}: no clip, using {len(seg_frames)} frames")
 
         # CV trajectory analysis — local, no API call, camera-shake compensated
         cv_traj = _analyze_hand_trajectories(seg_frames)
@@ -1850,19 +1888,36 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
         # Run local analysis — fast, runs before the LLM call
         motion_summary = _build_motion_summary(seg_frames)
 
-        motion_cues = (
+        hand_convention = (
             "HAND CONVENTION (egocentric video): the ego's RIGHT hand appears on the RIGHT side of the frame; "
             "LEFT hand appears on the LEFT side. Use the activity zone in the motion analysis to assign the correct hand.\n"
             "Object transfer between hands → use: pass, hand over, put, switch, set (NOT: transfer, give, handover)\n\n"
-            "TEMPORAL ANALYSIS — compare Frame 1 to the last frame:\n"
-            "  • Did the fabric/object orientation rotate in-plane? → 'rotate [object]'\n"
-            "  • Did the fabric flip over (reverse side now faces up)? → 'flip [object]'\n"
-            "  • Did an object leave a surface? → 'pick up [object]'\n"
-            "  • Did an object land on a surface? → 'place [object]'\n"
-            "  • Did activity zone shift from one side to the other? → 'pass [object] to [hand]'\n"
-            "  • Are hands pressing flat along fabric? → 'smoothen [object]'\n"
-            "  • Are hands bringing fabric edges together? → 'fold [object]'\n\n"
         )
+        action_cues = (
+            "  • Object leaves a surface → 'pick up [object]'\n"
+            "  • Object contacts a surface → 'place [object] on [destination]'\n"
+            "  • Object orientation rotates in-plane → 'rotate [object]'\n"
+            "  • Object flips over (reverse side faces up) → 'flip [object]'\n"
+            "  • Activity zone shifts side to side → 'pass [object] to [hand]'\n"
+            "  • Hands pressing flat along fabric → 'smoothen [object]'\n"
+            "  • Hands bringing fabric edges together → 'fold [object]'\n\n"
+        )
+        if clip_b64:
+            motion_cues = (
+                hand_convention +
+                "TEMPORAL ANALYSIS — watch the video clip as continuous motion and note every action:\n" +
+                action_cues +
+                "Pre-context frames (sent BEFORE the clip) show the scene just before the segment starts.\n"
+                "Post-context frame (sent AFTER the clip) shows the scene just after the segment ends.\n"
+                "Use these to identify pick-ups or places that happen right at the segment boundary.\n\n"
+            )
+        else:
+            motion_cues = (
+                hand_convention +
+                "TEMPORAL ANALYSIS — compare Frame 1 to the last frame:\n" +
+                action_cues
+            )
+
         generate_add_hint = "If a motion is clearly visible but NOT in the label, add it.\n\n"
         existing_label = seg.get("label", "").strip()
         local_analysis = (f"\n{motion_summary}\n\n") if motion_summary else ""
@@ -1876,7 +1931,10 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
                 prev_lines.append(f'  Seg {ps["id"]} ({ps["start"]}→{ps["end"]}): "{ps["label"]}"')
             prev_context = "\n".join(prev_lines) + "\n\n"
 
-        media_desc = "video clip" if clip_b64 else f"{len(seg_frames)} video frames"
+        media_desc = (
+            f"video clip ({end_s-start_s:.1f}s) with boundary context frames"
+            if clip_b64 else f"{len(seg_frames)} video frames"
+        )
         if existing_label:
             task_text = (
                 f"The annotator labeled this segment as:\n"
@@ -1969,7 +2027,13 @@ def _label_with_timestamps(frames: list[dict], timestamp_segments: list, context
 
         content = [{"type": "text", "text": task_text}]
         if clip_b64:
+            # Pre-context frames → clip → post-context frame
+            # The text prompt already tells the model the ordering and what each part represents
+            for f in pre_ctx_frames:
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
             content.append({"type": "image_url", "image_url": {"url": f"data:video/mp4;base64,{clip_b64}"}})
+            for f in post_ctx_frames:
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
         else:
             for f in seg_frames:
                 content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['b64']}"}})
